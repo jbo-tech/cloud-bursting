@@ -1,0 +1,35 @@
+# Secrets
+.env
+*.env
+configs/*-local.yaml
+.current_instance_id
+rclone.conf
+plex_libraries.json
+
+# Backups
+backups/*.tar.gz
+backups/*.zip
+
+# Logs
+logs/
+*.log
+
+# Temp
+/tmp/
+*.tmp
+.cache/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
