@@ -25,7 +25,7 @@ This tool automatically:
 
 ## 📋 Prerequisites
 
-- [Scaleway account](https://www.scaleway.com/) with CLI configured (`scw init`)
+- [Scaleway account](https://www.scaleway.com/fr/cli/) with CLI configured (`scw init`)
 - Cloud storage with your media (S3, Backblaze B2, etc.)
 - [rclone](https://rclone.org/) configured for your storage
 - Python 3.7+
@@ -93,22 +93,14 @@ The script will:
 ./update_zimaboard.sh plex_metadata_20240120_143022.tar.gz
 ```
 
-## 💰 Costs
-
-| Library Size | Instance Type | Duration | Cost |
-|-------------|--------------|----------|------|
-| 100 GB | DEV1-S | ~30 min | $0.01 |
-| 1 TB | DEV1-L | ~2 hours | $0.08 |
-| 9 TB | GP1-M | ~6 hours | $0.96 |
-
-Monthly cost for weekly incremental scans: **< $0.20**
-
 ## 📁 Project Structure
 
 ```
 plex-cloud-scanner/
 ├── automate_scan.py       # Main orchestration script
 ├── setup_instance.sh      # Cloud-init configuration
+├── create_instance.sh       # Test - Create an instance
+├── destroy_instance.sh      # Test - Destroy an instance
 ├── rclone.conf           # Your S3 configuration
 ├── plex_libraries.json   # Your Plex library setup
 ├── .env                  # Environment variables
@@ -119,13 +111,23 @@ plex-cloud-scanner/
 
 ### `.env` - Environment Variables
 ```bash
-# Instance type: DEV1-S (test) or GP1-M (production)
-INSTANCE_TYPE="GP1-M"
-PLEX_VERSION="latest"
+# === INSTANCE SCALEWAY ===
+export INSTANCE_TYPE="GP1-XS"  # DEV1-S (test) ou GP1-M (prod)
+export PLEX_VERSION="latest"   # ou version spécifique comme "1.32.8.7639-fb6452ebf"
 
-# Your local Plex server (for database import)
-ZIMABOARD_IP="192.168.1.100"
-PLEX_CONFIG_PATH="/var/lib/plexmediaserver"
+# === LOCAL (pour après le scan) ===
+# Ces variables sont pour la phase APRÈS le scan cloud,
+# quand vous voulez appliquer la DB sur votre ZimaBoard
+
+# IP du ZimaBoard (pour copier l'archive après)
+export ZIMABOARD_IP="192.168.1.0"
+
+# Chemin vers le dossier config Plex sur le ZimaBoard
+# Exemples selon votre installation :
+# - Docker : /path/to/docker/volumes/plex/config
+# - Natif : /var/lib/plexmediaserver
+# - Synology : /volume1/docker/plex/config
+export PLEX_CONFIG_PATH="/var/lib/plexmediaserver"
 ```
 
 ### `plex_libraries.json` - Library Configuration
@@ -184,20 +186,3 @@ Pull requests welcome! Please open an issue first to discuss changes.
 - The cloud instance is temporary and will be destroyed
 - Your actual media files stay in S3, only metadata is downloaded
 - Make a backup of your local Plex database before importing
-
-## 📝 License
-
-MIT License - See [LICENSE](LICENSE) file
-
-## 🙏 Acknowledgments
-
-- Built for low-power home servers
-- Inspired by cloud bursting concepts
-- Uses Scaleway for affordable compute
-- Compatible with any S3-compatible storage
-
----
-
-**Questions?** Open an issue or reach out!
-
-**Save money, save time, keep your home server cool! 🎉**
