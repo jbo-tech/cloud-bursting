@@ -1,323 +1,216 @@
 #!/usr/bin/env python3
 """
 automate_scan.py - Orchestre tout le processus de scan Plex dans le cloud
-Usage: python3 automate_scan.py
+Usage: python automate_scan.py
 """
 
-import os
-import sys
-import json
-import time
+#!/usr/bin/env python3
 import subprocess
-from datetime import datetime
-from pathlib import Path
+import time
+import os
+import json
+from dotenv import load_dotenv # On importe la librairie pour gérer le .env
 
-# Configuration depuis l'environnement
-CONFIG = {
-    "instance_type": os.getenv("INSTANCE_TYPE", "DEV1-S"),
-    "zone": os.getenv("SCW_DEFAULT_ZONE", "fr-par-1"),
-    "s3_bucket": os.getenv("S3_BUCKET", "media-bucket"),
-    "plex_version": os.getenv("PLEX_VERSION", "latest"),
-    "zimaboard_ip": os.getenv("ZIMABOARD_IP", "192.168.1.100"),
-}
+# ==============================================================================
+# --- ⚙️ CHARGEMENT DE LA CONFIGURATION ---
+# ==============================================================================
+load_dotenv() # Charge les variables depuis le fichier .env
 
-class PlexCloudScanner:
-    def __init__(self):
-        self.instance_id = None
-        self.instance_ip = None
-        self.start_time = time.time()
-        
-    def log(self, message):
-        """Afficher un message avec timestamp"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        print(f"[{timestamp}] {message}")
-    
-    def run_command(self, cmd, capture=False):
-        """Exécuter une commande shell"""
-        if capture:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            return result.stdout.strip()
-        else:
-            return subprocess.run(cmd, shell=True, check=True)
-    
-    def create_instance(self):
-        """Créer l'instance Scaleway avec cloud-init"""
-        self.log("🚀 Création de l'instance Scaleway...")
-        
-        # Lire le script cloud-init
-        with open("setup_instance.sh", "r") as f:
-            user_data = f.read()
-        
-        # Créer l'instance avec cloud-init
-        cmd = f"""
-        scw instance server create \
-            type={CONFIG['instance_type']} \
-            image=ubuntu_jammy \
-            name=plex-scanner-{datetime.now():%Y%m%d-%H%M%S} \
-            cloud-init='{user_data}' \
-            --output=json
-        """
-        
-        result = self.run_command(cmd, capture=True)
-        data = json.loads(result)
-        self.instance_id = data['id']
-        
-        self.log(f"✅ Instance créée: {self.instance_id}")
-        return self.instance_id
-    
-    def wait_for_instance(self):
-        """Attendre que l'instance soit prête"""
-        self.log("⏳ Attente du démarrage de l'instance...")
-        
-        for i in range(30):  # Max 5 minutes
-            # Récupérer le statut
-            cmd = f"scw instance server get {self.instance_id} --output=json"
-            result = self.run_command(cmd, capture=True)
-            data = json.loads(result)
-            
-            if data['state'] == 'running' and data.get('public_ip'):
-                self.instance_ip = data['public_ip']['address']
-                
-                # Tester SSH
-                ssh_test = f"ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no root@{self.instance_ip} echo ready"
-                if subprocess.run(ssh_test, shell=True, capture_output=True).returncode == 0:
-                    self.log(f"✅ Instance prête: {self.instance_ip}")
-                    return True
-            
-            time.sleep(10)
-        
-        raise Exception("Timeout: l'instance n'est pas prête")
-    
-    def setup_rclone(self):
-        """Transférer et configurer rclone"""
-        self.log("📤 Configuration de rclone...")
-        
-        # Copier rclone.conf
-        scp_cmd = f"scp -o StrictHostKeyChecking=no rclone.conf root@{self.instance_ip}:/root/.config/rclone/"
-        self.run_command(scp_cmd)
-        
-        # Monter S3
-        mount_cmd = f"""
-        ssh -o StrictHostKeyChecking=no root@{self.instance_ip} '
-            # Créer le point de montage
-            mkdir -p /mnt/s3-media
-            
-            # Monter avec rclone
-            rclone mount mega-s4:{CONFIG['s3_bucket']} /mnt/s3-media \
-                --daemon \
-                --vfs-cache-mode full \
-                --vfs-cache-max-size 20G \
-                --buffer-size 256M \
-                --allow-other
-            
-            # Vérifier le montage
-            sleep 5
-            if mountpoint -q /mnt/s3-media; then
-                echo "✅ S3 monté avec succès"
-                ls -la /mnt/s3-media | head -5
-            else
-                echo "❌ Erreur de montage S3"
-                exit 1
-            fi
-        '
-        """
-        self.run_command(mount_cmd)
-        
-        self.log("✅ S3 monté")
-    
-    def start_plex(self):
-        """Lancer Plex et déclencher le scan"""
-        self.log("🎬 Démarrage de Plex...")
-        
-        plex_cmd = f"""
-        ssh -o StrictHostKeyChecking=no root@{self.instance_ip} '
-            # Lancer Plex
-            docker run -d \
-                --name plex \
-                --network=host \
-                -e PLEX_UID=1000 \
-                -e PLEX_GID=1000 \
-                -e TZ=Europe/Paris \
-                -v /opt/plex_data/config:/config \
-                -v /opt/plex_data/transcode:/transcode \
-                -v /mnt/s3-media:/Media:ro \
-                plexinc/pms-docker:{CONFIG['plex_version']}
-            
-            # Attendre le démarrage
-            sleep 30
-            
-            # Vérifier que Plex est accessible
-            if curl -s http://localhost:32400/web > /dev/null; then
-                echo "✅ Plex accessible"
-            else
-                echo "⚠️ Plex non accessible"
-            fi
-            
-            # Déclencher le scan (si token disponible)
-            # Note: Configuration manuelle via l'interface web si pas de token
-        '
-        """
-        self.run_command(plex_cmd)
-        
-        self.log("✅ Plex démarré")
-        self.log(f"🌐 Interface web: http://{self.instance_ip}:32400/web")
-    
-    def monitor_scan(self):
-        """Surveiller la progression du scan"""
-        self.log("📊 Surveillance du scan...")
-        self.log("(Cela peut prendre plusieurs heures pour 9 To)")
-        
-        last_activity = time.time()
-        no_activity_count = 0
-        
-        while True:
-            # Vérifier l'activité de scan
-            check_cmd = f"""
-            ssh -o StrictHostKeyChecking=no root@{self.instance_ip} '
-                # Compter les processus de scan
-                SCANNERS=$(docker exec plex pgrep -c "Plex Media Scan" 2>/dev/null || echo 0)
-                
-                # Taille de la base de données
-                DB_SIZE=$(du -h /opt/plex_data/config/Library/Application\\ Support/Plex\\ Media\\ Server/Plug-in\\ Support/Databases/*.db 2>/dev/null | cut -f1)
-                
-                echo "SCANNERS:$SCANNERS"
-                echo "DB_SIZE:$DB_SIZE"
-            '
-            """
-            
-            output = self.run_command(check_cmd, capture=True)
-            
-            # Parser la sortie
-            scanners = 0
-            for line in output.split('\n'):
-                if 'SCANNERS:' in line:
-                    scanners = int(line.split(':')[1])
-                if 'DB_SIZE:' in line:
-                    db_size = line.split(':')[1]
-                    self.log(f"  Scanners actifs: {scanners} | DB: {db_size}")
-            
-            # Vérifier si le scan est terminé
-            if scanners == 0:
-                no_activity_count += 1
-                if no_activity_count >= 10:  # 5 minutes sans activité
-                    self.log("✅ Scan terminé (aucune activité depuis 5 minutes)")
-                    break
-            else:
-                no_activity_count = 0
-                last_activity = time.time()
-            
-            # Timeout de sécurité (6 heures)
-            if time.time() - self.start_time > 21600:
-                self.log("⚠️ Timeout atteint (6 heures)")
-                break
-            
-            time.sleep(30)
-    
-    def export_data(self):
-        """Exporter et télécharger la base de données Plex"""
-        self.log("💾 Export des données...")
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        archive_name = f"plex_metadata_{timestamp}.tar.gz"
-        
-        export_cmd = f"""
-        ssh -o StrictHostKeyChecking=no root@{self.instance_ip} '
-            # Arrêter Plex pour cohérence
-            docker stop plex
-            
-            # Créer l'archive
-            cd /opt/plex_data/config/Library/Application\\ Support/Plex\\ Media\\ Server/
-            tar czf /tmp/{archive_name} \
-                --exclude="Cache/*" \
-                --exclude="Logs/*" \
-                Plug-in\\ Support/Databases/ \
-                Metadata/ \
-                Media/ \
-                Preferences.xml
-            
-            # Afficher la taille
-            ls -lh /tmp/{archive_name}
-        '
-        """
-        self.run_command(export_cmd)
-        
-        # Télécharger l'archive
-        self.log("📥 Téléchargement de l'archive...")
-        scp_cmd = f"scp -o StrictHostKeyChecking=no root@{self.instance_ip}:/tmp/{archive_name} ./"
-        self.run_command(scp_cmd)
-        
-        self.log(f"✅ Archive téléchargée: {archive_name}")
-        return archive_name
-    
-    def destroy_instance(self):
-        """Détruire l'instance pour stopper la facturation"""
-        if self.instance_id:
-            self.log("🧹 Destruction de l'instance...")
-            cmd = f"scw instance server delete {self.instance_id} force=true"
-            self.run_command(cmd)
-            self.log("✅ Instance détruite - facturation arrêtée")
-    
-    def calculate_cost(self):
-        """Calculer le coût estimé"""
-        duration_hours = (time.time() - self.start_time) / 3600
-        
-        # Prix approximatifs Scaleway
-        prices = {
-            "DEV1-S": 0.01,
-            "DEV1-L": 0.04,
-            "GP1-M": 0.16,
-        }
-        
-        price_per_hour = prices.get(CONFIG['instance_type'], 0.20)
-        return round(duration_hours * price_per_hour, 2)
-    
-    def run(self):
-        """Exécuter le workflow complet"""
-        self.log("=" * 50)
-        self.log("🚀 DÉMARRAGE DU SCAN PLEX CLOUD")
-        self.log(f"Instance: {CONFIG['instance_type']}")
-        self.log(f"Bucket: {CONFIG['s3_bucket']}")
-        self.log("=" * 50)
-        
-        try:
-            # Workflow complet
-            self.create_instance()
-            self.wait_for_instance()
-            self.setup_rclone()
-            self.start_plex()
-            self.monitor_scan()
-            archive = self.export_data()
-            
-            # Résumé
-            self.log("=" * 50)
-            self.log("✅ SCAN TERMINÉ AVEC SUCCÈS")
-            self.log(f"📦 Archive: {archive}")
-            self.log(f"⏱️ Durée: {(time.time() - self.start_time) / 60:.1f} minutes")
-            self.log(f"💰 Coût estimé: {self.calculate_cost()}€")
-            self.log("=" * 50)
-            
-            self.log("\n👉 Prochaine étape:")
-            self.log(f"   Copier {archive} sur votre ZimaBoard et l'importer dans Plex")
-            
-        except Exception as e:
-            self.log(f"❌ Erreur: {e}")
-            
-        finally:
-            self.destroy_instance()
+# --- On lit les variables d'environnement ---
+INSTANCE_TYPE = os.getenv("INSTANCE_TYPE", "GP1-M")
+INSTANCE_ZONE = os.getenv("SCW_DEFAULT_ZONE", "fr-par-1")
+ROOT_VOLUME_SIZE = os.getenv("ROOT_VOLUME_SIZE", "50GB")
+PLEX_VERSION = os.getenv("PLEX_VERSION", "latest")
+
+RCLONE_REMOTE_NAME = os.getenv("S3_BUCKET") # Assurez-vous que le nom du remote est correct
+RCLONE_CONFIG_PATH = "./rclone.conf"
+
+ZIMABOARD_IP = os.getenv("ZIMABOARD_IP")
+PLEX_LOCAL_CONFIG_PATH = os.getenv("PLEX_CONFIG_PATH")
+
+# IMPORTANT : Le PLEX_CLAIM_TOKEN doit toujours être frais. On ne le met pas dans le .env
+# car il expire trop vite. Le script le demandera à l'utilisateur.
+PLEX_LOCAL_CONTAINER_NAME = os.getenv("PLEX_LOCAL_CONTAINER_NAME", "plex")
+
+# --- Constantes du script ---
+INSTANCE_NAME_PREFIX = "plex-scanner"
+CLOUD_INIT_SCRIPT = "./setup_instance.sh"
+INSTANCE_ID_FILE = ".current_instance_id"
+METADATA_ARCHIVE_NAME = "plex_metadata.tar.gz"
+
+
+# ==============================================================================
+# --- 🛠️ FONCTIONS UTILITAIRES ---
+# ==============================================================================
+def run_command(command, check=True):
+    """Exécute une commande locale et affiche sa sortie."""
+    print(f"🚀 LOCAL: {' '.join(command)}")
+    try:
+        result = subprocess.run(command, check=check, text=True, capture_output=True)
+        if result.stdout:
+            print(result.stdout)
+        if result.stderr:
+            print(result.stderr)
+        return result
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Erreur lors de l'exécution de la commande.")
+        if check:
+            raise
+        return e
+
+def run_remote_command(ip, command_str):
+    """Exécute une commande à distance via SSH."""
+    ssh_options = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+    command = ["ssh", *ssh_options, f"root@{ip}", command_str]
+    print(f"🛰️  REMOTE @ {ip}: {command_str}")
+    subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+def transfer_file(ip, local_path, remote_path):
+    """Transfère un fichier local vers l'instance distante via SCP."""
+    ssh_options = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+    command = ["scp", *ssh_options, local_path, f"root@{ip}:{remote_path}"]
+    print(f"🛰️  UPLOAD: {local_path} -> root@{ip}:{remote_path}")
+    subprocess.run(command, check=True)
+
+def download_file(ip, remote_path, local_path):
+    """Télécharge un fichier distant vers le répertoire local."""
+    ssh_options = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+    command = ["scp", *ssh_options, f"root@{ip}:{remote_path}", local_path]
+    print(f"🛰️  DOWNLOAD: root@{ip}:{remote_path} -> {local_path}")
+    subprocess.run(command, check=True)
+
+# ==============================================================================
+# --- 🤖 WORKFLOW PRINCIPAL ---
+# ==============================================================================
 
 def main():
-    # Vérifier les prérequis
-    if not os.path.exists("rclone.conf"):
-        print("❌ Fichier rclone.conf manquant")
-        sys.exit(1)
-    
-    if not os.path.exists("setup_instance.sh"):
-        print("❌ Fichier setup_instance.sh manquant")
-        sys.exit(1)
-    
-    # Lancer le scan
-    scanner = PlexCloudScanner()
-    scanner.run()
+    """Orchestre l'ensemble du processus de scan dans le cloud."""
+    instance_id = None
+
+    # --- Demande du PLEX_CLAIM_TOKEN au lancement ---
+    plex_claim_token = input("🔗 Veuillez coller un nouveau PLEX_CLAIM_TOKEN (de https://plex.tv/claim) : ")
+    if not plex_claim_token.startswith("claim-"):
+        print("❌ Token invalide. Arrêt.")
+        return
+
+    # --- Chargement de la configuration de la bibliothèque ---
+    print("\n--- 1. Chargement de la configuration de la bibliothèque ---")
+    with open('plex_libraries.json', 'r') as f:
+        libraries = json.load(f)
+    movie_library = next((lib for lib in libraries if lib['title'] == 'Movies'), None)
+    if not movie_library:
+        print("❌ Bibliothèque 'Movies' non trouvée dans plex_libraries.json")
+        return
+    print(f"   Bibliothèque '{movie_library['title']}' sélectionnée.")
+
+    try:
+        # --- Étape 2: Création de l'instance (utilise les variables du .env) ---
+        print("\n--- 2. Création de l'instance Scaleway ---")
+        instance_name = f"{INSTANCE_NAME_PREFIX}-{int(time.time())}"
+        with open(CLOUD_INIT_SCRIPT, 'r') as f:
+            cloud_init_content = f.read()
+
+        create_cmd = [
+            "scw", "instance", "server", "create",
+            f"type={INSTANCE_TYPE}", f"zone={INSTANCE_ZONE}", f"name={instance_name}",
+            "image=debian_bookworm", f"root-volume=l:{ROOT_VOLUME_SIZE}",
+            "--cloud-init", cloud_init_content, "-w", "-o", "json"
+        ]
+        result = run_command(create_cmd)
+        instance_data = json.loads(result.stdout)
+        instance_id = instance_data['id']
+        instance_ip = instance_data['public_ip']['address']
+        with open(INSTANCE_ID_FILE, 'w') as f: f.write(instance_id)
+        print(f"✅ Instance {instance_id} créée avec l'IP {instance_ip}")
+
+        # --- Étape 3: Attente et configuration ---
+        print("\n--- 3. Attente de la fin de la configuration (cloud-init) ---")
+        # (Cette section reste identique, elle attend la fin du script cloud-init)
+        config_success = False
+        for i in range(1, 21):
+            print(f"   Tentative {i}/20: Vérification du log...", end='\r')
+            try:
+                result = subprocess.run(
+                    ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", f"root@{instance_ip}", "grep -q 'Instance configurée et prête' /var/log/cloud-init-output.log"],
+                    capture_output=True
+                )
+                if result.returncode == 0:
+                    print("\n   ✅ Configuration terminée avec succès.")
+                    config_success = True
+                    break
+            except subprocess.CalledProcessError: pass
+            time.sleep(15)
+        if not config_success: raise Exception("La configuration cloud-init a échoué.")
+
+        print("   Configuration de Rclone...")
+        transfer_file(instance_ip, RCLONE_CONFIG_PATH, "/root/.config/rclone/rclone.conf")
+
+        # --- Étape 4: Lancement du Scan Plex ---
+        print("\n--- 4. Lancement du Scan Plex ---")
+        # 4.1 Monter le bucket S3 (utilise la variable du .env)
+        rclone_path = f"{RCLONE_REMOTE_NAME}:"
+        run_remote_command(instance_ip, f"rclone mount '{rclone_path}' /mnt/s3-media --allow-other --daemon --vfs-cache-mode full")
+        time.sleep(5)
+
+        # 4.2 Lancer le conteneur Plex (utilise le token entré par l'utilisateur)
+        docker_cmd = f"docker run -d --name=plex -e PLEX_CLAIM='{plex_claim_token}' -v /opt/plex_data/config:/config -v /mnt/s3-media:/media --net=host plexinc/pms-docker:{PLEX_VERSION}"
+        run_remote_command(instance_ip, docker_cmd)
+        print("   Conteneur Plex démarré. Attente de 2 minutes...")
+        time.sleep(120)
+
+        # 4.3 Ajouter et scanner la bibliothèque (inchangé)
+        plex_media_path = movie_library['paths'][0]
+        container_path = f"/media{plex_media_path}"
+        scanner_add_cmd = f"docker exec plex /usr/lib/plexmediaserver/Plex\\ Media\\ Scanner --add --section '{movie_library['title']}' --type movie --agent '{movie_library['agent']}' --scanner '{movie_library['scanner']}' --language '{movie_library['language']}' --location '{container_path}'"
+        run_remote_command(instance_ip, scanner_add_cmd)
+
+        print("   Lancement du scan. Surveillance du processus...")
+        scanner_scan_cmd = "docker exec plex /usr/lib/plexmediaserver/Plex\\ Media\\ Scanner --scan --refresh"
+        run_remote_command(instance_ip, scanner_scan_cmd)
+        while True:
+            result = subprocess.run(["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", f"root@{instance_ip}", "docker exec plex pgrep -f 'Plex Media Scanner'"], capture_output=True)
+            if result.returncode != 0:
+                print("   ✅ Scan terminé !")
+                break
+            print(f"   [{time.strftime('%H:%M:%S')}] Le scan est en cours...", end='\r')
+            time.sleep(120)
+
+        # --- Étape 5: Export et rapatriement ---
+        print("\n--- 5. Export et rapatriement des métadonnées ---")
+        run_remote_command(instance_ip, "docker stop plex")
+        tar_cmd = "cd '/opt/plex_data/config/Library/Application Support/Plex Media Server/' && tar -czf /root/plex_metadata.tar.gz 'Plug-in Support/Databases/com.plexapp.plugins.library.db' 'Metadata'"
+        run_remote_command(instance_ip, tar_cmd)
+        download_file(instance_ip, f"/root/{METADATA_ARCHIVE_NAME}", f"./{METADATA_ARCHIVE_NAME}")
+        print(f"   ✅ Archive {METADATA_ARCHIVE_NAME} téléchargée.")
+
+        # --- Étape 6: Mise à jour de l'instance locale ---
+        # print("\n--- 6. Mise à jour de l'instance Plex locale ---")
+        # print(f"   Arrêt du conteneur '{PLEX_LOCAL_CONTAINER_NAME}'...")
+        # run_command(["docker", "stop", PLEX_LOCAL_CONTAINER_NAME])
+
+        # print("   Application de la nouvelle configuration...")
+        # local_plex_path_full = os.path.join(PLEX_LOCAL_CONFIG_PATH, "Library/Application Support/Plex Media Server/")
+        # run_command(["tar", "-xzf", METADATA_ARCHIVE_NAME, "-C", local_plex_path_full])
+
+        # print(f"   Démarrage du conteneur '{PLEX_LOCAL_CONTAINER_NAME}'...")
+        # run_command(["docker", "start", PLEX_LOCAL_CONTAINER_NAME])
+        print("   ✅ Instance locale mise à jour.")
+
+    except Exception as e:
+        print(f"\n🚨 UNE ERREUR EST SURVENUE : {e}")
+    finally:
+        # --- Étape 7: Destruction de l'instance ---
+        print("\n--- 7. Destruction de l'instance Cloud ---")
+        if os.path.exists(INSTANCE_ID_FILE):
+            with open(INSTANCE_ID_FILE, 'r') as f: instance_id_to_delete = f.read().strip()
+            if instance_id_to_delete:
+                print(f"   Destruction de l'instance {instance_id_to_delete}...")
+                run_command(["scw", "instance", "server", "delete", instance_id_to_delete, "with-ip=true"], check=False)
+                os.remove(INSTANCE_ID_FILE)
+            else: print("   Aucun ID d'instance à détruire.")
+        else: print("   Aucun fichier d'ID d'instance trouvé.")
+
+    print("\n🎉 Workflow terminé !")
 
 if __name__ == "__main__":
     main()
