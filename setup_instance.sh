@@ -22,7 +22,16 @@ apt-get upgrade -y
 
 # 2. Installation des dépendances et outils utiles
 echo "Installation des dépendances (unzip, docker, outils...)"
-apt-get install -y htop iotop wget curl jq unzip
+apt-get install -y htop iotop wget curl jq unzip fuse3 sqlite3
+
+# 2b. Configuration de FUSE pour permettre à rclone + Docker de fonctionner
+echo "Configuration de FUSE (user_allow_other)..."
+if ! grep -q "^user_allow_other" /etc/fuse.conf; then
+    echo "user_allow_other" >> /etc/fuse.conf
+    echo "✅ user_allow_other activé dans /etc/fuse.conf"
+else
+    echo "✅ user_allow_other déjà activé"
+fi
 
 # 3. Installation Docker
 echo "Installation de Docker..."
@@ -37,8 +46,8 @@ curl https://rclone.org/install.sh | sudo bash
 # 5. Création des répertoires
 echo "Création des répertoires..."
 mkdir -p /mnt/s3-media
+mkdir -p /mnt/rclone-cache
 mkdir -p /opt/plex_data/{config,transcode}
-mkdir -p /root/.config/rclone
 
 # 6. Correction des permissions
 echo "Application des permissions pour Plex..."

@@ -1,20 +1,17 @@
 #!/bin/bash
 # create_instance.sh - Créer une instance de test
 
-# --- Configuration ---
-INSTANCE_TYPE="DEV1-S"      # Un type d'instance économique pour les tests.
-INSTANCE_ZONE="fr-par-1"    # La région parisienne, par exemple.
-INSTANCE_NAME="test-plex-scanner-$(date +%s)"  # Nom unique basé sur le timestamp
-IMAGE="debian_bookworm"        # Debian 12 (Bookworm
-ROOT_VOLUME_SIZE="10G"   # Taille du volume racine
-# ----------------------
+set -euo pipefail
+
+# Charger les variables d'environnement
+source .env
 
 echo "🧪 Création d'une instance de test..."
 
 # Créer l'instance avec cloud-init
 INSTANCE_ID=$(scw instance server create \
     type=${INSTANCE_TYPE} \
-    zone=${INSTANCE_ZONE} \
+    zone=${SCW_DEFAULT_ZONE} \
     name=${INSTANCE_NAME} \
     image=${IMAGE} \
     root-volume=l:${ROOT_VOLUME_SIZE} \
@@ -38,6 +35,11 @@ echo "🔗 SSH: ssh root@$INSTANCE_IP"
 # Sauvegarder l'ID pour destruction
 echo $INSTANCE_ID > .current_instance_id
 
+# Sauvegarder l'IP pour référence
+echo $INSTANCE_IP > .current_instance_ip
+
+ping -c 3 ${INSTANCE_IP}
+
 # --- Boucle de validation SSH ---
 echo "⏳ Attente de la disponibilité de SSH (peut prendre 1 à 2 minutes)..."
 for i in {1..20}; do
@@ -50,8 +52,10 @@ for i in {1..20}; do
         SSH_READY=true
         break
     fi
+    echo "   Tentative ${i}/20 : SSH non disponible, attente 5 secondes..."
     sleep 5
 done
+echo "   DEBUG: Fin de la boucle SSH avec statut=$SSH_READY"
 
 if [ -z "$SSH_READY" ]; then
     echo "❌ Échec : Le port SSH n'est pas devenu accessible."

@@ -9,6 +9,8 @@ plex_libraries.json
 # Backups
 backups/*.tar.gz
 backups/*.zip
+*.backup
+plex_*.tar.gz
 
 # Logs
 logs/
@@ -18,6 +20,8 @@ logs/
 /tmp/
 *.tmp
 .cache/
+tmp/
+.megaignore
 
 # Python
 __pycache__/
