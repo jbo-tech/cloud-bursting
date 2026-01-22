@@ -556,10 +556,10 @@ def wait_plex_ready(ip, container='plex', timeout=180):
 
 def wait_plex_fully_ready(ip, container='plex', timeout=300):
     """
-    Attend que Plex soit complètement prêt (y compris les plugins chargés).
+    Attend que Plex soit complètement prêt (serveur claimé + plugins chargés).
 
     Critères de validation :
-    1. L'API /identity répond avec "Plex"
+    1. L'API /identity répond HTTP 200 avec claimed="1"
     2. Au moins 3 processus Plex actifs dans le conteneur
 
     Args:
@@ -574,11 +574,12 @@ def wait_plex_fully_ready(ip, container='plex', timeout=300):
     start_time = time.time()
     last_api_status = "inconnu"
     last_api_response = ""
+    is_claimed = False
 
     while time.time() - start_time < timeout:
         elapsed = int(time.time() - start_time)
 
-        # Vérifier que Plex répond ET que des plugins sont chargés
+        # Vérifier que Plex répond ET que le serveur est claimé
         cmd = "curl -s -w '\\n%{http_code}' http://localhost:32400/identity 2>&1"
         result = docker_exec(ip, container, cmd, capture_output=True, check=False)
 
@@ -588,23 +589,30 @@ def wait_plex_fully_ready(ip, container='plex', timeout=300):
         api_body = '\n'.join(lines[:-1]) if len(lines) > 1 else ""
         last_api_response = api_body[:200]
 
-        # Analyser le statut de l'API
-        if http_code == "200" and "Plex" in api_body:
-            last_api_status = "OK"
+        # Analyser le statut de l'API - vérifier le claim
+        if http_code == "200" and 'claimed="1"' in api_body:
+            last_api_status = "OK (claimé)"
+            is_claimed = True
+        elif http_code == "200" and 'claimed="0"' in api_body:
+            last_api_status = "Non claimé (PLEX_CLAIM invalide/expiré?)"
+            is_claimed = False
         elif http_code == "200":
-            last_api_status = f"HTTP 200 mais réponse inattendue"
+            last_api_status = "HTTP 200 (statut claim inconnu)"
+            is_claimed = False
         elif http_code.isdigit() and int(http_code) > 0:
             last_api_status = f"HTTP {http_code}"
+            is_claimed = False
         else:
             last_api_status = "pas de réponse"
+            is_claimed = False
 
         # Vérifier aussi les processus système Plex
         processes_cmd = "ps aux | grep -i plex | grep -v grep | wc -l"
         processes_result = docker_exec(ip, container, processes_cmd, capture_output=True, check=False)
         plex_processes = int(processes_result.stdout.strip()) if processes_result.stdout.strip().isdigit() else 0
 
-        # Critère de succès : API OK + au moins 3 processus
-        if last_api_status == "OK" and plex_processes >= 3:
+        # Critère de succès : serveur claimé + au moins 3 processus
+        if is_claimed and plex_processes >= 3:
             print(f"✅ Plex complètement initialisé après {elapsed}s")
             return True
 
@@ -617,6 +625,14 @@ def wait_plex_fully_ready(ip, container='plex', timeout=300):
     print(f"   Dernier statut API : {last_api_status}")
     if last_api_response:
         print(f"   Dernière réponse   : {last_api_response[:100]}...")
+
+    # Message d'aide si non claimé
+    if not is_claimed and 'claimed="0"' in last_api_response:
+        print("\n💡 Le serveur n'est pas claimé. Causes possibles :")
+        print("   • PLEX_CLAIM expiré (durée de vie ~4 minutes)")
+        print("   • PLEX_CLAIM déjà utilisé")
+        print("   • Problème réseau vers plex.tv")
+        print("   → Générez un nouveau claim : https://www.plex.tv/claim")
 
     # Capturer les logs Docker pour diagnostic
     print("\n📋 Logs Docker (dernières 20 lignes) :")
