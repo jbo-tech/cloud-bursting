@@ -439,10 +439,13 @@ def enable_plex_analysis_via_api(ip, container, plex_token):
     if result.returncode == 0:
         print("✅ Préférences d'analyse configurées.")
 
-        # # Déclencher le Butler pour lancer les analyses immédiatement
-        # butler_cmd = f"curl -s -X POST 'http://localhost:32400/butler/DeepMediaAnalysis' -H 'X-Plex-Token: {plex_token}'"
-        # docker_exec(ip, container, butler_cmd, check=False)
-        # print("✅ Butler DeepMediaAnalysis déclenché.")
+        # Déclencher le Butler pour lancer les analyses immédiatement
+        # Note (2026-01-23): Sans cet appel, les préférences "asap" ne déclenchent
+        # PAS l'analyse sur les items existants. Le Butler doit être appelé
+        # explicitement pour scanner la bibliothèque et lancer les tâches.
+        butler_cmd = f"curl -s -X POST 'http://localhost:32400/butler/DeepMediaAnalysis' -H 'X-Plex-Token: {plex_token}'"
+        docker_exec(ip, container, butler_cmd, check=False)
+        print("✅ Butler DeepMediaAnalysis déclenché.")
     else:
         print(f"❌ Erreur réactivation : {result.stderr}")
 
@@ -885,6 +888,19 @@ def enable_music_analysis_only(ip, container, plex_token):
 
     if result.returncode == 0:
         print("   ✅ Analyses musicales activées")
+
+        # Déclencher le Butler pour lancer l'analyse Sonic immédiatement
+        # Note (2026-01-23): Sans cet appel explicite, les préférences "asap"
+        # n'ont aucun effet sur les items déjà présents. Le Butler scanne la
+        # bibliothèque et crée les tâches d'analyse pour chaque piste.
+        # Réf: forums.plex.tv/t/sonic-analysis-doesn-t-trigger
+        butler_cmd = f"curl -s -X POST 'http://localhost:32400/butler/DeepMediaAnalysis' -H 'X-Plex-Token: {plex_token}'"
+        butler_result = docker_exec(ip, container, butler_cmd, capture_output=True, check=False)
+        if butler_result.returncode == 0:
+            print("   ✅ Butler DeepMediaAnalysis déclenché")
+        else:
+            print(f"   ⚠️  Butler non déclenché: {butler_result.stderr}")
+
         return True
     else:
         print(f"   ❌ Erreur: {result.stderr}")
