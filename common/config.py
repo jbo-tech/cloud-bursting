@@ -19,12 +19,12 @@ def print_phase_header(phase_num, title, width=60):
 
     Exemple de sortie:
         ============================================================
-        [00:31:55] PHASE 8: TRAITEMENT MUSIQUE (Sonic)
+        PHASE 8: TRAITEMENT MUSIQUE (Sonic) [00:31:55]
         ============================================================
     """
     timestamp = datetime.now().strftime("%H:%M:%S")
     print("\n" + "=" * width)
-    print(f"[{timestamp}] PHASE {phase_num}: {title}")
+    print(f"PHASE {phase_num}: {title} [{timestamp}]")
     print("=" * width)
 
 def load_env():

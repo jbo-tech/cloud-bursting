@@ -74,6 +74,7 @@ from common.plex_scan import (
     export_metadata,
     wait_section_idle,
     wait_sonic_complete,
+    wait_plex_stabilized,
     trigger_section_scan,
     trigger_section_analyze,
     export_intermediate
@@ -384,21 +385,38 @@ Profils d'instance:
                 # Activer uniquement les analyses musicales
                 enable_music_analysis_only(instance_ip, 'plex', plex_token)
 
-                # Refresh Metadata si demandé (invalide le cache interne Plex)
+                # 8.3a Refresh Metadata si demandé (images, paroles, matching)
+                # Important: ceci peut prendre plusieurs heures sur une grosse bibliothèque
                 if args.force_refresh:
-                    print("🔄 Refresh Metadata pour invalider le cache interne Plex...")
+                    print("\n8.3a Refresh Metadata (images, paroles, matching)...")
+                    print("   ⚠️  Cette phase peut prendre plusieurs heures sur une grosse bibliothèque")
                     trigger_section_scan(instance_ip, 'plex', plex_token, music_section_id, force=True)
-                    print("   ⏳ Attente fin du refresh...")
-                    wait_section_idle(instance_ip, 'plex', plex_token, music_section_id,
-                                      section_type='artist', phase='scan', config_path='/opt/plex_data/config')
-                    print("   ✅ Refresh terminé, lancement Sonic...")
 
-                # Lancer Sonic
+                    # Utiliser le profil metadata_refresh avec timeout étendu (4h)
+                    metadata_params = get_monitoring_params('metadata_refresh')
+                    print(f"   ⏳ Attente fin du refresh (timeout: {metadata_params['absolute_timeout']//3600}h)...")
+                    wait_section_idle(instance_ip, 'plex', plex_token, music_section_id,
+                                      section_type='artist', phase='scan', config_path='/opt/plex_data/config',
+                                      timeout=metadata_params['absolute_timeout'],
+                                      check_interval=metadata_params['check_interval'])
+                    print("   ✅ Refresh metadata terminé.")
+
+                    # 8.3b Stabilisation avant Sonic
+                    # Attendre que toutes les tâches de fond (téléchargements, etc.) soient vraiment finies
+                    print("\n8.3b Stabilisation avant Sonic...")
+                    wait_plex_stabilized(instance_ip, 'plex', plex_token,
+                                         cooldown_checks=3,
+                                         check_interval=60,
+                                         cpu_threshold=20.0,
+                                         timeout=1800)
+
+                # 8.3c Lancer Sonic (sans --force, le refresh a été fait séparément)
+                print("\n8.3c Lancement analyse Sonic...")
                 trigger_sonic_analysis(instance_ip, music_section_id, 'plex')
 
                 # Monitoring avec profil cloud (24h timeout)
                 monitoring_profile = 'cloud_intensive' if args.profile == 'cloud' else 'local_delta'
-                monitoring_params = get_monitoring_params('monitoring_profile')
+                monitoring_params = get_monitoring_params(monitoring_profile)
 
                 sonic_result = wait_sonic_complete(
                     instance_ip,

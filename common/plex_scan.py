@@ -44,6 +44,15 @@ MONITORING_PROFILES = {
         'cpu_idle_threshold': 5.0,  # Plus strict car Sonic utilise beaucoup de CPU
         'absolute_timeout': 86400,  # 24h max
         'description': 'Cloud scan intensif (grosse lib + Sonic)'
+    },
+    'metadata_refresh': {
+        # Refresh metadata séparé (images, paroles, matching)
+        # Long timeout car 456k pistes = beaucoup de téléchargements réseau
+        'check_interval': 120,
+        'stall_threshold': 60,      # 2h sans progression = arrêt (60 × 2min)
+        'cpu_idle_threshold': 20.0, # Moins strict car I/O réseau variable
+        'absolute_timeout': 14400,  # 4h max pour metadata seul
+        'description': 'Refresh metadata (images, paroles, matching)'
     }
 }
 
@@ -733,9 +742,12 @@ def trigger_sonic_analysis(ip, music_section_id, container='plex'):
     """
     print(f"🎹 Lancement de l'analyse Sonic pour section {music_section_id}...")
 
+    # Note: On n'utilise PAS --force ici car cela déclencherait un refresh
+    # metadata complet avant l'analyse audio. Le refresh doit être fait
+    # séparément en amont si nécessaire.
     sonic_cmd = (
         f"nohup '/usr/lib/plexmediaserver/Plex Media Scanner' "
-        f"--analyze --section {music_section_id} --server-action sonic --force "
+        f"--analyze --section {music_section_id} --server-action sonic "
         f"</dev/null >/dev/null 2>&1 &"
     )
     docker_exec(ip, container, sonic_cmd, check=False)
@@ -749,6 +761,76 @@ def is_sonic_running(ip, container='plex'):
     cmd = "pgrep -f 'server-action sonic' > /dev/null && echo 'running' || echo 'stopped'"
     result = docker_exec(ip, container, cmd, capture_output=True, check=False)
     return 'running' in result.stdout
+
+
+def wait_plex_stabilized(ip, container, plex_token, cooldown_checks=3, check_interval=60, cpu_threshold=20.0, timeout=1800):
+    """
+    Attend que Plex soit complètement stabilisé (aucune activité de fond).
+
+    Utilisé entre le refresh metadata et le lancement de Sonic pour s'assurer
+    que toutes les tâches de fond (téléchargement images, paroles, matching)
+    sont terminées.
+
+    Args:
+        ip: 'localhost' ou IP remote
+        container: Nom du conteneur
+        plex_token: Token d'authentification Plex
+        cooldown_checks: Nombre de checks consécutifs "idle" requis (défaut: 3)
+        check_interval: Intervalle entre checks en secondes (défaut: 60)
+        cpu_threshold: Seuil CPU en % sous lequel Plex est considéré idle (défaut: 20%)
+        timeout: Timeout absolu en secondes (défaut: 1800 = 30min)
+
+    Returns:
+        bool: True si stabilisé, False si timeout
+    """
+    print(f"⏳ [{time.strftime('%H:%M:%S')}] Attente stabilisation Plex (cooldown: {cooldown_checks} × {check_interval}s)...")
+
+    start_time = time.time()
+    idle_count = 0
+
+    while time.time() - start_time < timeout:
+        # Vérifier les activités globales
+        activities_cmd = f"curl -s 'http://localhost:32400/activities' -H 'X-Plex-Token: {plex_token}'"
+        activities_result = docker_exec(ip, container, activities_cmd, capture_output=True, check=False)
+        active_tasks = activities_result.stdout.count('<Activity') if activities_result.stdout else 0
+
+        # Vérifier les processus Scanner
+        scanner_cmd = "pgrep -f 'Plex Media Scanner' > /dev/null && echo 'running' || echo 'stopped'"
+        scanner_result = docker_exec(ip, container, scanner_cmd, capture_output=True, check=False)
+        scanner_running = 'running' in scanner_result.stdout
+
+        # Vérifier le CPU
+        cpu_result = execute_command(
+            ip,
+            f"docker stats {container} --no-stream --format '{{{{.CPUPerc}}}}'",
+            capture_output=True, check=False
+        )
+        cpu_str = cpu_result.stdout.strip().replace('%', '')
+        cpu_percent = float(cpu_str) if cpu_str and cpu_str != 'N/A' else 0.0
+
+        is_idle = (active_tasks == 0 and not scanner_running and cpu_percent < cpu_threshold)
+
+        if is_idle:
+            idle_count += 1
+            print(f"   [{time.strftime('%H:%M:%S')}] ⏸️  Idle {idle_count}/{cooldown_checks} (CPU: {cpu_percent:.1f}%)")
+            if idle_count >= cooldown_checks:
+                print(f"   [{time.strftime('%H:%M:%S')}] ✅ Plex stabilisé après {int(time.time() - start_time)}s")
+                return True
+        else:
+            if idle_count > 0:
+                idle_count = 0  # Reset si activité reprend
+            status_parts = []
+            if active_tasks > 0:
+                status_parts.append(f"{active_tasks} tâches")
+            if scanner_running:
+                status_parts.append("scanner actif")
+            status_parts.append(f"CPU: {cpu_percent:.1f}%")
+            print(f"   [{time.strftime('%H:%M:%S')}] 🔄 Activité: {', '.join(status_parts)}")
+
+        time.sleep(check_interval)
+
+    print(f"   [{time.strftime('%H:%M:%S')}] ⚠️  Timeout stabilisation ({timeout}s)")
+    return False
 
 
 def get_section_activity(ip, container, plex_token, section_id):

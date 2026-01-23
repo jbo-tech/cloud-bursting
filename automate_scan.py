@@ -35,13 +35,14 @@ Usage:
 
 # === IMPORTS ===
 import argparse
+import re
 import sys
 import time
 from datetime import datetime
 
 # Imports modules common
-from common.config import load_env, load_libraries, get_docker_limits
-from common.executor import execute_command, download_file_from_remote, read_state_file
+from common.config import load_env, load_libraries, get_docker_limits, print_phase_header
+from common.executor import execute_command, download_file_from_remote, read_state_file, docker_exec
 from common.plex_setup import (
     apply_system_optimizations,
     cleanup_plex_data,
@@ -53,13 +54,23 @@ from common.plex_setup import (
     add_library,
     verify_plex_pass_active,
     enable_plex_analysis_via_api,
-    collect_plex_logs
+    collect_plex_logs,
+    wait_plex_ready_for_libraries,
+    disable_all_background_tasks,
+    enable_music_analysis_only,
+    enable_all_analysis
 )
 from common.plex_scan import (
-    monitor_discovery_phase,
     trigger_sonic_analysis,
     get_monitoring_params,
-    export_metadata
+    export_metadata,
+    scan_section_incrementally,
+    wait_section_idle,
+    wait_plex_stabilized,
+    wait_sonic_complete,
+    trigger_section_scan,
+    trigger_section_analyze,
+    export_intermediate
 )
 from common.scaleway import (
     INSTANCE_PROFILES,
@@ -107,14 +118,25 @@ Profils d'instance:
                         help='Récupérer les logs Plex en fin de run')
     parser.add_argument('--test-mega', action='store_true',
                         help='Tester la bande passante MEGA avant de continuer')
+    parser.add_argument('--filter', type=str, metavar='PREFIX',
+                        help='Filtrer le scan music par préfixe (ex: --filter Q)')
+    parser.add_argument('--force-refresh', action='store_true',
+                        help='Refresh Metadata avant Sonic (images, paroles, matching)')
+    parser.add_argument('--music-only', action='store_true',
+                        help='Traiter uniquement la section Musique (skip autres sections)')
+    parser.add_argument('--quick-test', action='store_true',
+                        help='Mode test rapide : skip Sonic, scan validation uniquement')
 
     args = parser.parse_args()
 
-    # === TERMINAL LOGGING ===
+    # === VARIABLES GLOBALES ===
     tee_logger = None
+    RUN_TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # === TERMINAL LOGGING ===
     if args.save_output:
         from common.tee_logger import TeeLogger
-        tee_logger = TeeLogger()
+        tee_logger = TeeLogger(timestamp=RUN_TIMESTAMP)
         tee_logger.start()
         print(f"📝 Output terminal sauvegardé dans: {tee_logger.log_path}")
 
@@ -208,69 +230,209 @@ Profils d'instance:
             can_do_sonic = pass_status.get('active', False)
 
         # === PHASE 5: CONFIGURATION BIBLIOTHÈQUES ===
-        print("\n" + "=" * 60)
-        print(f"PHASE 5: CONFIGURATION BIBLIOTHÈQUES ({len(libraries)})")
-        print("=" * 60)
+        print_phase_header(5, f"CONFIGURATION BIBLIOTHÈQUES ({len(libraries)})")
 
+        if not wait_plex_ready_for_libraries(instance_ip, 'plex', plex_token):
+            print("⚠️ Plex pas prêt, on continue quand même...")
+
+        success_count = 0
         for lib in libraries:
-            add_library(instance_ip, 'plex', lib)
+            if add_library(instance_ip, 'plex', lib, plex_token):
+                success_count += 1
             time.sleep(2)
 
-        # === PHASE 6: SCAN ===
+        print(f"\n📊 Résumé: {success_count}/{len(libraries)} bibliothèques créées")
+
+        if success_count > 0:
+            print("⏳ Pause de 10s pour finalisation des bibliothèques...")
+            time.sleep(10)
+
+        # === PHASE 6: TRAITEMENT MUSIQUE (Sonic) ===
         if not args.skip_scan:
-            print("\n" + "=" * 60)
-            print("PHASE 6: SCAN (DÉCOUVERTE)")
-            print("=" * 60)
+            print_phase_header(6, "TRAITEMENT MUSIQUE (Sonic)")
 
-            trigger_scan_all(instance_ip, container='plex', plex_token=plex_token, force=True)
-            monitor_discovery_phase(
-                instance_ip,
-                container='plex',
-                plex_token=plex_token,
-                check_interval=30,
-                max_idle=10
-            )
+            # 6.1 Désactivation tâches de fond
+            print("\n6.1 Désactivation des tâches de fond...")
+            disable_all_background_tasks(instance_ip, 'plex', plex_token)
 
-            # === PHASE 7: ANALYSE ===
-            print("\n" + "=" * 60)
-            print("PHASE 7: ANALYSE")
-            print("=" * 60)
+            # 6.2 Récupérer les sections réelles de Plex
+            print("\n6.2 Identification des sections...")
+            section_info = {}
+            api_cmd = f"curl -s 'http://localhost:32400/library/sections' -H 'X-Plex-Token: {plex_token}'"
+            result = docker_exec(instance_ip, 'plex', api_cmd, capture_output=True, check=False)
 
-            if args.skip_analysis:
-                print("⏭️  Analyse ignorée (--skip-analysis)")
-            elif not can_do_sonic:
-                print("⏭️  Analyse Sonic ignorée (Plex Pass non actif)")
+            for match in re.finditer(r'key="(\d+)".*?type="([^"]+)".*?title="([^"]+)"', result.stdout):
+                s_id, s_type, s_title = match.group(1), match.group(2), match.group(3)
+                section_info[s_title] = {"id": s_id, "type": s_type}
+
+            print(f"   📚 Sections trouvées: {len(section_info)}")
+            for name, info in section_info.items():
+                print(f"      [{info['id']}] {name} ({info['type']})")
+
+            # 6.3 Scanner la section Musique
+            print("\n6.3 Scan de la section Musique...")
+            music_section_id = None
+            music_section_name = None
+            for name, info in section_info.items():
+                if info['type'] == 'artist':
+                    music_section_id = info['id']
+                    music_section_name = name
+                    break
+
+            if music_section_id:
+                print(f"   Section Musique trouvée: [{music_section_id}] {music_section_name}")
+
+                # Scan avec ou sans filtre
+                if args.filter:
+                    filter_prefixes = [args.filter.upper()]
+                    print(f"   📂 Scan avec filtre {filter_prefixes}")
+
+                    # Trouver le chemin container correspondant
+                    container_path = None
+                    for lib in libraries:
+                        if lib['title'] == music_section_name:
+                            container_path = lib['paths'][0]
+                            break
+
+                    if container_path:
+                        # En cloud, le mount local est /mnt/s3-media
+                        local_mount_path = container_path.replace('/Media', '/mnt/s3-media')
+                        scan_section_incrementally(
+                            instance_ip, 'plex', plex_token,
+                            music_section_id, 'artist',
+                            container_path, local_mount_path,
+                            filter_prefixes=filter_prefixes
+                        )
+                    else:
+                        print(f"   ⚠️  Chemin container non trouvé, fallback sur API refresh")
+                        trigger_section_scan(instance_ip, 'plex', plex_token, music_section_id, force=False)
+                else:
+                    # Scan global via API
+                    trigger_section_scan(instance_ip, 'plex', plex_token, music_section_id, force=False)
+
+                # Attendre fin du scan
+                wait_section_idle(instance_ip, 'plex', plex_token, music_section_id,
+                                  section_type='artist', phase='scan', config_path='/opt/plex_data/config')
+                print("   ✅ Scan Musique terminé")
             else:
-                if plex_token:
-                    enable_plex_analysis_via_api(instance_ip, 'plex', plex_token)
+                print("   ⚠️  Aucune section Musique trouvée")
 
-                trigger_deep_analysis(instance_ip, container='plex', plex_token=plex_token)
+            # 6.4 Analyse Sonic (sauf si --quick-test ou --skip-analysis)
+            if args.quick_test or args.skip_analysis:
+                print("\n6.4 Analyse Sonic SKIPPÉE (--quick-test ou --skip-analysis)")
+            elif not can_do_sonic:
+                print("\n6.4 Analyse Sonic IGNORÉE (Plex Pass non actif)")
+            elif not music_section_id:
+                print("\n6.4 Analyse Sonic IGNORÉE (pas de section Musique)")
+            else:
+                print("\n6.4 Analyse Sonic...")
+                enable_music_analysis_only(instance_ip, 'plex', plex_token)
 
-                # Sélection du profil de monitoring selon la puissance de l'instance
+                # 6.4a Refresh Metadata si demandé (images, paroles, matching)
+                if args.force_refresh:
+                    print("\n6.4a Refresh Metadata (images, paroles, matching)...")
+                    print("   ⚠️  Cette phase peut prendre plusieurs heures sur une grosse bibliothèque")
+                    trigger_section_scan(instance_ip, 'plex', plex_token, music_section_id, force=True)
+
+                    # Utiliser le profil metadata_refresh avec timeout étendu (4h)
+                    metadata_params = get_monitoring_params('metadata_refresh')
+                    print(f"   ⏳ Attente fin du refresh (timeout: {metadata_params['absolute_timeout']//3600}h)...")
+                    wait_section_idle(instance_ip, 'plex', plex_token, music_section_id,
+                                      section_type='artist', phase='scan', config_path='/opt/plex_data/config',
+                                      timeout=metadata_params['absolute_timeout'],
+                                      check_interval=metadata_params['check_interval'])
+                    print("   ✅ Refresh metadata terminé.")
+
+                    # 6.4b Stabilisation avant Sonic
+                    print("\n6.4b Stabilisation avant Sonic...")
+                    wait_plex_stabilized(instance_ip, 'plex', plex_token,
+                                         cooldown_checks=3,
+                                         check_interval=60,
+                                         cpu_threshold=20.0,
+                                         timeout=1800)
+
+                # 6.4c Lancer Sonic (sans --force, le refresh a été fait séparément)
+                print("\n6.4c Lancement analyse Sonic...")
+                trigger_sonic_analysis(instance_ip, music_section_id, 'plex')
+
+                # Monitoring avec profil cloud (24h timeout)
                 monitoring_profile = 'cloud_intensive' if args.instance in ['power', 'superpower'] else 'cloud_standard'
-                print(f"   📋 Profil monitoring: {monitoring_profile}")
+                monitoring_params = get_monitoring_params(monitoring_profile)
 
-                monitor_analysis_phase(
+                sonic_result = wait_sonic_complete(
                     instance_ip,
+                    '/opt/plex_data/config',
+                    music_section_id,
                     container='plex',
-                    plex_token=plex_token,
-                    **get_monitoring_params(monitoring_profile)
+                    timeout=monitoring_params['absolute_timeout'],
+                    check_interval=monitoring_params['check_interval']
                 )
+
+                print(f"\n   📊 Résultat Sonic:")
+                print(f"      Initial  : {sonic_result['initial_count']} pistes")
+                print(f"      Final    : {sonic_result['final_count']} pistes")
+                print(f"      Delta    : +{sonic_result['delta']}")
+                print(f"      Durée    : {sonic_result['duration_minutes']} min")
+                print(f"      Raison   : {sonic_result['reason']}")
+
+            # 6.5 Export intermédiaire
+            print("\n6.5 Export intermédiaire...")
+            export_intermediate(instance_ip, 'plex', '/opt/plex_data/config', '.', label="post_sonic")
+
+            # === PHASE 7: VALIDATION AUTRES SECTIONS ===
+            if not args.music_only:
+                print_phase_header(7, "VALIDATION AUTRES SECTIONS")
+
+                # 7.1 Réactivation analyses
+                print("\n7.1 Réactivation des analyses (Photos/Vidéos)...")
+                enable_all_analysis(instance_ip, 'plex', plex_token)
+
+                # 7.2 Scan séquentiel des autres sections
+                print("\n7.2 Scan des sections restantes (séquentiel)...")
+                other_sections = [(name, info) for name, info in section_info.items()
+                                  if info['type'] != 'artist']
+
+                if other_sections:
+                    for section_name, info in other_sections:
+                        # Étape 1: Scan
+                        print(f"\n   🔍 Scan '{section_name}' (ID: {info['id']}, type: {info['type']})")
+                        trigger_section_scan(instance_ip, 'plex', plex_token, info['id'], force=False)
+                        wait_section_idle(instance_ip, 'plex', plex_token, info['id'],
+                                          section_type=info['type'], phase='scan',
+                                          config_path='/opt/plex_data/config', timeout=3600)
+
+                        # Étape 2: Analyse (thumbnails, chapitres, etc.)
+                        if not args.skip_analysis and not args.quick_test:
+                            print(f"   🔬 Analyse '{section_name}'")
+                            trigger_section_analyze(instance_ip, 'plex', plex_token, info['id'])
+                            wait_section_idle(instance_ip, 'plex', plex_token, info['id'],
+                                              section_type=info['type'], phase='analyze',
+                                              config_path='/opt/plex_data/config', timeout=3600)
+
+                    print("\n   ✅ Autres sections terminées")
+                else:
+                    print("   Aucune autre section à traiter")
+            else:
+                print("\n⏭️  Phase 7 SKIPPÉE (--music-only)")
         else:
             print("\n⏭️  Scan ignoré (--skip-scan)")
 
         # === PHASE 8: EXPORT ===
-        print("\n" + "=" * 60)
-        print("PHASE 8: EXPORT MÉTADONNÉES")
-        print("=" * 60)
+        print_phase_header(8, "EXPORT MÉTADONNÉES")
 
-        # Arrêter Plex
+        # 8.1 Collecte logs Plex AVANT arrêt
+        if args.collect_logs or args.save_output:
+            print("\n8.1 Collecte des logs Plex (conteneur actif)...")
+            collect_plex_logs(instance_ip, 'plex', prefix="final", timestamp=RUN_TIMESTAMP)
+
+        # 8.2 Arrêter Plex
+        print("\n8.2 Arrêt de Plex...")
         execute_command(instance_ip, "docker stop -t 60 plex || docker kill plex", check=False)
         time.sleep(5)
 
-        # Export
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        archive_name = f'plex_metadata_{timestamp}.tar.gz'
+        # 8.3 Export complet
+        print("\n8.3 Export complet...")
+        archive_name = f'plex_metadata_{RUN_TIMESTAMP}.tar.gz'
 
         archive_remote = export_metadata(
             instance_ip,
@@ -279,7 +441,8 @@ Profils d'instance:
             config_path='/opt/plex_data/config'
         )
 
-        # Télécharger
+        # 8.4 Télécharger l'archive
+        print("\n8.4 Téléchargement de l'archive...")
         local_archive = f'./{archive_name}'
         download_file_from_remote(instance_ip, archive_remote, local_archive)
 

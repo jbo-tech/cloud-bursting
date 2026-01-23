@@ -100,3 +100,45 @@ Technical decisions and their context. Added via `/retro`.
 **Context**: Different workloads need different resources. Testing uses lite (DEV1-S), production uses power (GP1-S) or superpower (GP1-M) for Sonic analysis. Profiles include instance type, volume size, and rclone cache/transfer settings.
 **Alternatives considered**: Single instance type (waste or insufficient), manual configuration (error-prone).
 **Date**: inferred from codebase
+
+### Retry pattern for Plex token retrieval
+
+**Decision**: `get_plex_token()` retries toutes les 10s pendant 120s (configurable) au lieu d'un appel unique.
+**Context**: Le token Plex (PlexOnlineToken) peut mettre plusieurs secondes à apparaître dans Preferences.xml après le claim initial. Un appel unique échouait systématiquement si le timing n'était pas parfait.
+**Alternatives considered**: Sleep fixe avant appel (fragile), augmenter le délai d'init (ne résout pas le problème).
+**Date**: 2026-01-21
+
+### Automatic Docker logs capture on init timeout
+
+**Decision**: En cas de timeout de `wait_plex_fully_ready()`, capturer automatiquement les 20 dernières lignes de logs Docker pour diagnostic.
+**Context**: Les échecs d'init étaient impossibles à diagnostiquer car le conteneur était souvent arrêté avant qu'on puisse voir les logs. La capture automatique préserve le contexte.
+**Alternatives considered**: Collecte manuelle (souvent trop tard), logs complets (trop verbeux).
+**Date**: 2026-01-21
+
+### Extended timeouts for cloud with injected DB
+
+**Decision**: Timeouts plus longs en cloud: init Plex 600s (vs 300s), token 180s (vs 120s), Plex Pass 120s (vs 60s).
+**Context**: Avec une DB de 15GB injectée, Plex peut mettre plus de temps à initialiser (migration DB, index). Les timeouts locaux étaient insuffisants pour le contexte cloud.
+**Alternatives considered**: Timeouts identiques (échecs fréquents), timeouts infinis (coûts cloud).
+**Date**: 2026-01-21
+
+### Three-phase Sonic workflow: Refresh → Stabilize → Analyze
+
+**Decision**: Séparer le traitement Sonic en 3 sous-phases distinctes: (a) metadata refresh optionnel, (b) stabilisation (attente idle), (c) analyse Sonic pure.
+**Context**: Le flag `--force` de Plex Scanner déclenche un refresh metadata complet AVANT l'action demandée. Pour 450k pistes, ce refresh prend 2h+ (téléchargement images/paroles). L'analyse Sonic ne démarre jamais si le refresh n'est pas terminé.
+**Alternatives considered**: Tout en une phase (impossible de distinguer refresh vs analyse), --force systématique (2h+ de refresh à chaque run).
+**Date**: 2026-01-23
+
+### Stabilization check before intensive analysis
+
+**Decision**: Nouvelle fonction `wait_plex_stabilized()` qui attend: (1) 0 activités API, (2) scanner stoppé, (3) CPU < seuil pendant N checks consécutifs.
+**Context**: Lancer Sonic immédiatement après scan/refresh peut échouer car Plex a des tâches de fond en cours. La stabilisation garantit que Plex est vraiment idle avant de démarrer une nouvelle phase intensive.
+**Alternatives considered**: Sleep fixe (fragile), monitoring CPU seul (insuffisant), pas d'attente (conflits de ressources).
+**Date**: 2026-01-23
+
+### Metadata refresh monitoring profile
+
+**Decision**: Nouveau profil `metadata_refresh` avec timeout 4h, CPU threshold 20%, check interval 2min.
+**Context**: Le refresh metadata (images, paroles, matching) est une opération longue et CPU-intensive différente du scan ou de l'analyse. Profil dédié pour éviter les faux positifs de stall detection.
+**Alternatives considered**: Réutiliser profil scan (timeouts inadaptés), profil cloud_intensive (thresholds incorrects).
+**Date**: 2026-01-23

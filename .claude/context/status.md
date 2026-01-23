@@ -6,12 +6,12 @@ Déléguer les tâches d'indexation intensives de Plex (scan, génération de m�
 
 ## Current focus
 
-Projet stable en v2.7. Architecture modulaire dans `common/` (7 modules), 4 scripts principaux harmonisés.
+Fix du workflow Sonic. L'analyse Sonic ne progressait pas (compteur bloqué à 81035 pendant 2h malgré CPU à 407%). Cause identifiée et corrigée : `--force` déclenchait un refresh metadata complet avant l'analyse audio.
 
 **Scripts:**
-- `automate_scan.py` - Cloud scan from scratch
-- `automate_delta_sync.py` - Cloud delta sync (DB existante)
-- `test_scan_local.py` / `test_delta_sync.py` - Tests locaux
+- `automate_scan.py` - Cloud scan from scratch ✅ refactorisé
+- `automate_delta_sync.py` - Cloud delta sync (DB existante) ✅ refactorisé
+- `test_scan_local.py` / `test_delta_sync.py` - Tests locaux ✅ refactorisés
 
 ## Reference Database
 
@@ -19,20 +19,53 @@ Projet stable en v2.7. Architecture modulaire dans `common/` (7 modules), 4 scri
 
 | Bibliothèque | Type | Items | État |
 |--------------|------|-------|------|
-| Music | artist | 456,473 pistes | Sonic 17% |
-| TV Shows | show | 738 épisodes | Thumbs manquants |
-| Movies | movie | 221 films | Thumbs manquants |
-| A voir | movie | 32 films | Thumbs manquants |
-| Photos | photo | 1,565 photos | OK |
-| Kids - Movies | movie | 5 films | Thumbs manquants |
-| Kids - TV Shows | show | 200 épisodes | Thumbs manquants |
-| Adult | movie | 57 films | Thumbs manquants |
+| Music | artist | 456,534 pistes | Sonic 17.8% (81,035) |
+| TV Shows | show | 938 épisodes | OK |
+| Movies | movie | 315 films | OK |
+| A voir | movie | 32 films | OK |
+| Photos | photo | 28,338 photos | OK |
+| Kids - Movies | movie | 5 films | OK |
+| Kids - TV Shows | show | 200 épisodes | OK |
+| Adult | movie | 57 films | OK |
 
-**Total:** 534,875 items | **DB actuelles:** 2.3 GB | **Archive:** 5.4 GB (compressé) / 15 GB (avec backups) | **Metadata bundles:** 0%
+**Total:** ~490k items | **Archive:** 5.37 GB (compressé) / 15 GB (DB décompressée)
 
 ## Log
 
 <!-- Entries added by /retro, newest first -->
+
+### 2026-01-23 - Fix workflow Sonic + refactoring majeur
+
+- Done:
+  - Diagnostic du problème Sonic : `--force` déclenchait un refresh metadata complet (2h+) avant l'analyse audio
+  - Analyse logs : CPU 407% = téléchargement métadonnées (fanart.tv, lastfm), pas Chromaprint
+  - Vérification compteurs SQL : méthode `ms:musicAnalysisVersion` correcte (81,035 = bon comptage)
+  - Fix `trigger_sonic_analysis()` : retiré `--force`
+  - Nouveau profil monitoring `metadata_refresh` (timeout 4h, CPU threshold 20%)
+  - Nouvelle fonction `wait_plex_stabilized()` (attente idle avant Sonic)
+  - Nouveau workflow en 3 sous-phases : 6.Xa Metadata Refresh → 6.Xb Stabilisation → 6.Xc Sonic
+  - Ajout argument `--force-refresh` dans tous les scripts
+  - Refactoring `automate_scan.py` : supprimé fonctions inexistantes, aligné sur workflow commun
+  - Harmonisation des 4 scripts principaux avec même workflow
+- Next:
+  - Relancer test avec `--force-refresh` pour valider le nouveau workflow
+  - Vérifier que Sonic progresse vraiment (lecture fichiers S3)
+
+### 2026-01-21 - Améliorations diagnostic init Plex
+
+- Done:
+  - Analyse des logs de test cloud (20260121_000027) et local (20260121_205911)
+  - Ajout `print_phase_header()` pour horodatage des phases dans tous les scripts
+  - Amélioration `get_plex_token()` avec retry (120s timeout, 10s interval)
+  - Amélioration `wait_plex_fully_ready()` avec diagnostic détaillé + capture logs Docker
+  - Augmentation timeouts cloud (600s init, 180s token, 120s Plex Pass)
+  - Commit et push sur GitHub (06342b3)
+- Blocked:
+  - Plex init timeout malgré 10 processus actifs et sections trouvées
+  - Critère `/identity` ne retourne pas "Plex" - cause inconnue
+- Next:
+  - Relancer test avec nouveau diagnostic pour voir pourquoi `/identity` échoue
+  - Analyser les logs Docker capturés automatiquement
 
 ### 2026-01-20 - Fix sqlite3 manquant sur instance cloud
 

@@ -115,6 +115,34 @@ Errors encountered and how to avoid them. Added via `/retro`.
 **Solution**: Centralize shared logic in `common/` modules. Scripts should only contain orchestration logic.
 **Date**: inferred from codebase
 
+### Single-shot token retrieval
+
+**Problem**: Token Plex non récupéré car appel unique sans retry. Le token peut mettre plusieurs secondes à apparaître dans Preferences.xml après le claim.
+**Cause**: `get_plex_token()` faisait un seul appel et abandonnait immédiatement si le token n'était pas présent.
+**Solution**: Implémenter retry avec timeout (120s par défaut, intervalle 10s). Le token apparaît généralement après quelques secondes.
+**Date**: 2026-01-21
+
+### Insufficient init failure diagnostics
+
+**Problem**: `wait_plex_fully_ready()` timeout sans indication de pourquoi l'API `/identity` échoue. Impossible de diagnostiquer.
+**Cause**: Logging minimal ("Plex initialisation... (processus: N)") sans détail sur l'état de l'API.
+**Solution**: Logger le code HTTP et la réponse à chaque itération. En cas de timeout, capturer automatiquement les 20 dernières lignes des logs Docker.
+**Date**: 2026-01-21
+
+### Using --force with Sonic analysis triggers metadata refresh
+
+**Problem**: Sonic analysis blocked for 2h (compteur 81,035 → 81,035) malgré CPU 407%. Aucun fichier audio lu depuis S3.
+**Cause**: `--force` dans `trigger_sonic_analysis()` déclenche un refresh metadata complet (fanart.tv, lastfm, paroles) AVANT l'analyse audio Chromaprint. Le CPU était occupé à télécharger des images, pas à analyser l'audio.
+**Solution**: Retirer `--force` de l'analyse Sonic. Séparer explicitement: (1) metadata refresh optionnel avec `--force-refresh`, (2) stabilisation (attente idle), (3) analyse Sonic sans --force.
+**Date**: 2026-01-23
+
+### Confusing Plex Scanner flags behavior
+
+**Problem**: Flag `--force` fait plus que forcer l'analyse - il déclenche aussi un refresh de toutes les métadonnées.
+**Cause**: Documentation Plex insuffisante sur les effets de bord de `--force`.
+**Solution**: Documenter les flags Plex Scanner: `--force` = refresh metadata + action demandée. Pour analyse seule, ne pas utiliser `--force`. Vérifier dans les logs: "Updating Metadata" = refresh, "Fingerprinting"/"Sonic" = analyse audio.
+**Date**: 2026-01-23
+
 ---
 
 ## Reference: Plex Metadata Types
