@@ -452,9 +452,8 @@ Profils d'instance:
         print("=" * 60)
         print(f"📦 Archive: {local_archive}")
         print("")
-        print("🔄 Pour appliquer sur ZimaBoard:")
-        print(f"   scp {archive_name} jbo@zimaboard:/tmp/")
-        print(f"   ssh jbo@zimaboard './import_db.sh /tmp/{archive_name}'")
+        print("🔄 Pour appliquer sur le serveur Plex local:")
+        print(f"   ./update_to_distant_plex.sh {archive_name}")
 
     except KeyboardInterrupt:
         print("\n\n⚠️  Workflow interrompu par l'utilisateur")

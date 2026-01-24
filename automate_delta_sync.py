@@ -544,9 +544,8 @@ Profils d'instance:
         if final_stats.get('photos', 0) > 0:
             print(f"   Photos            : {final_stats.get('photos', 0)}")
 
-        print("\n🔄 Pour appliquer sur ZimaBoard:")
-        print(f"   scp {archive_name} jbo@zimaboard:/tmp/")
-        print(f"   # Puis sur ZimaBoard: ./import_db.sh /tmp/{archive_name}")
+        print("\n🔄 Pour appliquer sur le serveur Plex local:")
+        print(f"   ./update_to_distant_plex.sh {archive_name}")
 
     except KeyboardInterrupt:
         print("\n\n⚠️  Workflow interrompu par l'utilisateur")
