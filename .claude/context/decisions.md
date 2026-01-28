@@ -142,3 +142,31 @@ Technical decisions and their context. Added via `/retro`.
 **Context**: Le refresh metadata (images, paroles, matching) est une opération longue et CPU-intensive différente du scan ou de l'analyse. Profil dédié pour éviter les faux positifs de stall detection.
 **Alternatives considered**: Réutiliser profil scan (timeouts inadaptés), profil cloud_intensive (thresholds incorrects).
 **Date**: 2026-01-23
+
+### Mandatory environment variables for deployment scripts
+
+**Decision**: Les scripts de déploiement distant (`update_to_distant_plex.sh`) utilisent des variables d'environnement obligatoires sans valeurs par défaut (`PLEX_REMOTE_HOST`, `PLEX_REMOTE_PATH`).
+**Context**: Les scripts sont versionnés dans Git. Des valeurs par défaut hardcodées (user, hostname, chemins) exposeraient des informations personnelles. Forcer l'utilisateur à définir explicitement les variables garantit qu'aucune donnée sensible n'est commitée.
+**Alternatives considered**: Valeurs par défaut avec override (risque d'oubli et commit de données personnelles), fichier .env non versionné (ajoute complexité), arguments CLI uniquement (moins pratique pour usage répété).
+**Date**: 2026-01-24
+
+### Rclone resilience parameters for long-running mounts
+
+**Decision**: Configuration rclone avec paramètres de résilience: `--timeout 30m`, `--contimeout 300s`, `--retries 10`, `--retries-sleep 30s`, `--low-level-retries 10`, `--stats 5m`.
+**Context**: Les tests de nuit (6h+) échouaient car le montage rclone se déconnectait après ~30 minutes d'inactivité relative. Les paramètres par défaut (timeout 10m, 2 retries) sont insuffisants pour les workflows longs avec lectures sporadiques.
+**Alternatives considered**: Cron de remontage périodique (complexe), watchdog externe (surcharge), augmentation cache uniquement (ne résout pas les déconnexions réseau).
+**Date**: 2026-01-24
+
+### Rclone mount healthcheck with automatic remount
+
+**Decision**: Nouvelles fonctions `verify_rclone_mount_healthy()` et `remount_s3_if_needed()` pour détecter et corriger les montages morts.
+**Context**: Même avec des paramètres de résilience, un montage FUSE peut devenir "stale" (socket déconnecté mais toujours monté). Un healthcheck avec timeout de 10s et remontage automatique permet de récupérer sans intervention manuelle.
+**Alternatives considered**: Supervision systemd (ne détecte pas les sockets morts), test manuel avant chaque phase (fastidieux), ignorer et espérer (échecs nocturnes).
+**Date**: 2026-01-24
+
+### CLI argument naming: --instance vs --monitoring
+
+**Decision**: Renommer `--profile` en `--monitoring` pour clarifier son rôle. Conserver `--instance` pour les ressources matérielles.
+**Context**: Confusion entre deux arguments aux noms similaires mais aux rôles différents. `--instance` (lite/standard/power/superpower) contrôle les ressources (rclone, Docker limits). `--profile` contrôlait les timeouts de monitoring mais le nom suggérait autre chose. `--monitoring` (local/cloud) est plus explicite.
+**Alternatives considered**: `--timeout-profile` (trop long), `--patience` (pas assez technique), `--run-mode` (suggère d'autres différences).
+**Date**: 2026-01-28

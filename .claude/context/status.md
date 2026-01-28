@@ -6,12 +6,17 @@ Déléguer les tâches d'indexation intensives de Plex (scan, génération de m�
 
 ## Current focus
 
-Fix du workflow Sonic. L'analyse Sonic ne progressait pas (compteur bloqué à 81035 pendant 2h malgré CPU à 407%). Cause identifiée et corrigée : `--force` déclenchait un refresh metadata complet avant l'analyse audio.
+Validation du fix feedback visuel + test local en cours pour valider les corrections rclone.
 
-**Scripts:**
-- `automate_scan.py` - Cloud scan from scratch ✅ refactorisé
-- `automate_delta_sync.py` - Cloud delta sync (DB existante) ✅ refactorisé
-- `test_scan_local.py` / `test_delta_sync.py` - Tests locaux ✅ refactorisés
+**Scripts principaux:**
+- `automate_scan.py` - Cloud scan from scratch ✅
+- `automate_delta_sync.py` - Cloud delta sync (DB existante) ✅
+- `test_scan_local.py` / `test_delta_sync.py` - Tests locaux ✅
+
+**Scripts de déploiement:**
+- `update_to_local_plex.sh` - Import métadonnées sur serveur local ✅
+- `update_to_distant_plex.sh` - Déploiement distant via SSH ✅
+- `export_plex_db.sh` - Export DB Plex pour delta sync ✅
 
 ## Reference Database
 
@@ -33,6 +38,69 @@ Fix du workflow Sonic. L'analyse Sonic ne progressait pas (compteur bloqué à 8
 ## Log
 
 <!-- Entries added by /retro, newest first -->
+
+### 2026-01-28 - Renommage argument --profile → --monitoring
+
+- Done:
+  - Clarification de la différence entre `--instance` (ressources: rclone, Docker) et `--profile` (monitoring: timeouts)
+  - Renommage `--profile` → `--monitoring` dans 3 fichiers pour plus de clarté
+  - Fichiers modifiés: `test_scan_local.py`, `test_delta_sync.py`, `automate_delta_sync.py`
+  - Conservation des valeurs `local/cloud` (plus explicites que `quick/patient`)
+- Next:
+  - Poursuivre validation test local avec corrections rclone
+  - Tester workflow complet en cloud
+
+### 2026-01-28 - Test local en cours + investigation blocage
+
+- Done:
+  - Modification `ensure_mount_healthy()` : ajout feedback visuel "🔍 Vérification du montage S3..."
+  - Test local lancé pour valider les corrections rclone
+- Observed:
+  - Blocage 30+ minutes après "6.2 Scan de la section Musique..." (ancien code sans feedback)
+  - `ls /mnt/s3/Music` retournait "No such file or directory" pendant le blocage
+  - Test a repris après - probablement remontage automatique réussi
+- Next:
+  - Attendre fin du test pour analyse complète des logs rclone
+  - Vérifier si le remontage automatique a fonctionné ou si autre cause
+
+### 2026-01-27 - Fix feedback visuel healthchecks
+
+- Done:
+  - Ajout message de progression dans `ensure_mount_healthy()` avant `verify_rclone_mount_healthy()`
+  - Affichage "🔍 Vérification du montage S3..." avec spinner pendant la vérification
+  - Affichage du temps de réponse en cas de succès: "✅ (0.5s)"
+  - Affichage "❌" en cas d'échec avant les messages de remontage
+- Next:
+  - Relancer test local pour valider l'affichage du feedback
+  - Tester workflow complet en cloud
+
+### 2026-01-24 - Fix déconnexions rclone
+
+- Done:
+  - Analyse logs test local (20260123_193715): 1248 erreurs socket, x13 vs test précédent
+  - Diagnostic: montage rclone se déconnecte après ~30min (dernier log 20:13, erreurs 02:41)
+  - Les erreurs "Permission denied" sont un faux positif (effet secondaire du socket mort)
+  - Fix profils rclone (`config.py`): timeout 30m, contimeout 300s, retries 10, retries_sleep 30s, cache 5G
+  - Fix commande mount (`plex_setup.py`): ajout --retries, --retries-sleep, --stats 5m
+  - Nouvelles fonctions healthcheck: `verify_rclone_mount_healthy()`, `remount_s3_if_needed()`
+- Next:
+  - Relancer test local pour valider les corrections rclone
+  - Si OK, tester workflow complet en cloud
+
+### 2026-01-24 - Refonte scripts de déploiement
+
+- Done:
+  - Renommage cohérent: `update_to_local_plex.sh` / `update_to_distant_plex.sh` / `export_plex_db.sh`
+  - Suppression données personnelles hardcodées (user, hostname, chemins)
+  - Variables d'environnement obligatoires pour déploiement distant (`PLEX_REMOTE_HOST`, `PLEX_REMOTE_PATH`)
+  - Arguments CLI pour chemins Plex (avec défaut standard Linux)
+  - Backup archive automatique avant import
+  - Mode non-interactif (`-y`) pour exécution scriptée
+  - Détection dynamique `$(whoami)@$(hostname)` pour instructions SCP
+  - Commit et push GitHub (8a72436)
+- Next:
+  - Tester workflow complet: export → delta sync cloud → deploy distant
+  - Valider workflow Sonic avec nouveau profil 3 phases
 
 ### 2026-01-23 - Fix workflow Sonic + refactoring majeur
 

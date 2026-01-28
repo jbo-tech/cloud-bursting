@@ -43,8 +43,8 @@ Usage:
     # Combinaison : test minimal (juste scan Music, sans Sonic)
     python test_delta_sync.py --quick-test --music-only
 
-    # Profil cloud : timeouts étendus (24h Sonic) + exports intermédiaires
-    python test_delta_sync.py --profile cloud
+    # Monitoring cloud : timeouts étendus (24h Sonic) + exports intermédiaires
+    python test_delta_sync.py --monitoring cloud
 
     # Récupérer les logs Plex en fin de run (debug)
     python test_delta_sync.py --collect-logs
@@ -78,8 +78,10 @@ from common.plex_setup import (
     disable_all_background_tasks,
     enable_music_analysis_only,
     enable_all_analysis,
-    collect_plex_logs
+    collect_plex_logs,
+    ensure_mount_healthy
 )
+from common.mount_monitor import MountHealthMonitor
 from common.plex_scan import (
     trigger_sonic_analysis,
     get_monitoring_params,
@@ -118,7 +120,7 @@ def main():
     parser.add_argument('--archive', type=str, metavar='PATH',
                         help='Chemin vers l\'archive DB (auto-détecté si non spécifié)')
     parser.add_argument('--instance', choices=['lite', 'standard', 'power', 'superpower'],
-                        default='lite', help='Profil d\'instance (config rclone)')
+                        default='standard', help='Profil rclone (lite=conservateur, standard=équilibré)')
     parser.add_argument('--keep', action='store_true',
                         help='Garder le conteneur après test')
     parser.add_argument('--force-scan', action='store_true',
@@ -135,8 +137,8 @@ def main():
                         help='Récupérer les logs Plex en fin de run')
     parser.add_argument('--save-output', action='store_true',
                         help='Sauvegarder l\'output terminal dans logs/')
-    parser.add_argument('--profile', choices=['local', 'cloud'],
-                        default='local', help='Profil d\'exécution (timeouts, monitoring)')
+    parser.add_argument('--monitoring', choices=['local', 'cloud'],
+                        default='local', help='Profil monitoring: local (timeouts courts), cloud (patient)')
 
     args = parser.parse_args()
 
@@ -198,6 +200,7 @@ def main():
         plex_token = None
         stats_before = None
         can_do_sonic = False
+        mount_monitor = None
 
         # === PHASE 1: PRÉPARATION ===
         print_phase_header(1, "PRÉPARATION")
@@ -253,6 +256,19 @@ def main():
         if not plex_claim:
             print("❌ PLEX_CLAIM requis")
             sys.exit(1)
+
+        # Démarrer le monitoring continu du montage APRÈS le prompt utilisateur
+        # (évite les faux positifs pendant que l'utilisateur entre son claim)
+        mount_monitor = MountHealthMonitor(
+            ip=ip,
+            mount_point=str(MOUNT_DIR),
+            rclone_remote=env['S3_BUCKET'],
+            profile=rclone_profile,
+            cache_dir=str(CACHE_DIR),
+            log_file=str(LOG_FILE),
+            check_interval=60  # Vérification toutes les minutes
+        )
+        mount_monitor.start()
 
         # Démarrer Plex avec la DB injectée
         start_plex_container(
@@ -317,6 +333,13 @@ def main():
 
         # 6.2 Scan section Musique
         print("\n6.2 Scan de la section Musique...")
+
+        # Vérification du montage S3 avant scan
+        if not ensure_mount_healthy(ip, env['S3_BUCKET'], rclone_profile,
+                                    str(MOUNT_DIR), str(CACHE_DIR), str(LOG_FILE), "scan Musique"):
+            print("❌ Abandon du scan - montage S3 inaccessible")
+            sys.exit(1)
+
         music_section_id = None
         music_section_name = None
         for name, info in section_info.items():
@@ -395,6 +418,13 @@ def main():
                 # Important: ceci peut prendre plusieurs heures sur une grosse bibliothèque
                 if args.force_refresh:
                     print("\n6.3a Refresh Metadata (images, paroles, matching)...")
+
+                    # Vérification du montage S3 avant refresh
+                    if not ensure_mount_healthy(ip, env['S3_BUCKET'], rclone_profile,
+                                                str(MOUNT_DIR), str(CACHE_DIR), str(LOG_FILE), "refresh metadata"):
+                        print("❌ Abandon du refresh - montage S3 inaccessible")
+                        sys.exit(1)
+
                     print("   ⚠️  Cette phase peut prendre plusieurs heures sur une grosse bibliothèque")
                     trigger_section_scan(ip, 'plex', plex_token, music_section_id, force=True)
 
@@ -418,19 +448,28 @@ def main():
 
                 # 6.3c Lancer Sonic (sans --force, le refresh a été fait séparément)
                 print("\n6.3c Lancement analyse Sonic...")
+
+                # Vérification du montage S3 avant Sonic (critique - 2h d'analyse)
+                if not ensure_mount_healthy(ip, env['S3_BUCKET'], rclone_profile,
+                                            str(MOUNT_DIR), str(CACHE_DIR), str(LOG_FILE), "analyse Sonic"):
+                    print("❌ Abandon de Sonic - montage S3 inaccessible")
+                    sys.exit(1)
+
                 trigger_sonic_analysis(ip, music_section_id, 'plex')
 
                 # Monitoring avec profil adapté (centralisé dans MONITORING_PROFILES)
-                monitoring_profile = 'cloud_intensive' if args.profile == 'cloud' else 'local_delta'
+                monitoring_profile = 'cloud_intensive' if args.monitoring == 'cloud' else 'local_delta'
                 monitoring_params = get_monitoring_params(monitoring_profile)
 
+                # Utiliser le monitor global démarré en phase 3
                 sonic_result = wait_sonic_complete(
                     ip,
                     str(PLEX_CONFIG),
                     music_section_id,
                     container='plex',
                     timeout=monitoring_params['absolute_timeout'],
-                    check_interval=monitoring_params['check_interval']
+                    check_interval=monitoring_params['check_interval'],
+                    health_check_fn=mount_monitor.get_health_check_fn()
                 )
 
                 print(f"\n📊 Résultat analyse Sonic:")
@@ -442,8 +481,8 @@ def main():
         else:
             print("\n6.3 Analyse Sonic SKIPPÉE (--quick-test)")
 
-        # 6.4 Export intermédiaire (si profil cloud)
-        if args.profile == 'cloud':
+        # 6.4 Export intermédiaire (si monitoring cloud)
+        if args.monitoring == 'cloud':
             print("\n6.4 Export intermédiaire...")
             export_intermediate(ip, 'plex', str(PLEX_CONFIG), '.', label="post_sonic")
 
@@ -462,6 +501,13 @@ def main():
 
             # 7.2 Scan sections restantes (SÉQUENTIEL)
             print("\n7.2 Scan et analyse des sections restantes (séquentiel)...")
+
+            # Vérification du montage S3 avant scan autres sections
+            if not ensure_mount_healthy(ip, env['S3_BUCKET'], rclone_profile,
+                                        str(MOUNT_DIR), str(CACHE_DIR), str(LOG_FILE), "scan autres sections"):
+                print("❌ Abandon du scan autres sections - montage S3 inaccessible")
+                sys.exit(1)
+
             other_sections = [(name, info) for name, info in section_info.items() if info['type'] != 'artist']
 
             if other_sections:
@@ -562,6 +608,10 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
+        # Arrêter le monitor de montage s'il est actif
+        if mount_monitor is not None:
+            mount_monitor.stop()
+
         # === DIAGNOSTIC POST-MORTEM ===
         print("\n" + "=" * 60)
         print("🔍 DIAGNOSTIC POST-MORTEM")

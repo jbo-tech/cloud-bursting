@@ -136,6 +136,20 @@ Errors encountered and how to avoid them. Added via `/retro`.
 **Solution**: Retirer `--force` de l'analyse Sonic. Séparer explicitement: (1) metadata refresh optionnel avec `--force-refresh`, (2) stabilisation (attente idle), (3) analyse Sonic sans --force.
 **Date**: 2026-01-23
 
+### Permission denied errors as symptom of dead rclone mount
+
+**Problem**: Erreurs "Permission denied" lors de la création de bundles metadata (24 erreurs), semblant indiquer un problème de droits.
+**Cause**: Le montage rclone FUSE s'est déconnecté (socket mort) mais reste monté en apparence. Le noyau Linux retourne des erreurs incohérentes: "Socket not connected" pour les lectures, "Permission denied" pour les écritures.
+**Solution**: Ces erreurs sont un faux positif. Ne pas corriger les permissions - corriger la stabilité du montage rclone. Les erreurs disparaîtront une fois le montage fiabilisé.
+**Date**: 2026-01-24
+
+### Rclone mount disconnecting after ~30 minutes
+
+**Problem**: Test de nuit échoue avec 1248 erreurs "Socket not connected". Le montage S3 devient inaccessible après ~30 minutes d'inactivité.
+**Cause**: Configuration rclone par défaut insuffisante pour les connexions longue durée: timeout 10m trop court, pas de retries automatiques, pas de reconnexion.
+**Solution**: Augmenter les paramètres de résilience: `--timeout 30m`, `--contimeout 300s`, `--retries 10`, `--retries-sleep 30s`, `--low-level-retries 10`. Ajouter `--stats 5m` pour monitoring.
+**Date**: 2026-01-24
+
 ### Confusing Plex Scanner flags behavior
 
 **Problem**: Flag `--force` fait plus que forcer l'analyse - il déclenche aussi un refresh de toutes les métadonnées.

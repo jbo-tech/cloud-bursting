@@ -112,25 +112,31 @@ def get_rclone_profile(profile='lite'):
     """
     profiles = {
         'lite': {
-            'cache_size': '2G', # Utile pour vfs_cache_max_size
+            'cache_size': '5G',
             'buffer_size': '64M',
             'read_chunk': '32M',
-            'transfers': '4',
-            'checkers': '8',
-            'timeout': '10m',
-            'low_level_retries': '2',
+            'transfers': '2',     # Réduit pour MEGA (rate-limiting)
+            'checkers': '4',      # Réduit pour MEGA
+            'timeout': '60m',
+            'contimeout': '300s',
+            'low_level_retries': '10',
+            'retries': '10',
+            'retries_sleep': '30s',
             'dir_cache': '24h',
             'attr_timeout': '8760h',
         },
         'standard': {
-            'cache_size': '5G',
+            'cache_size': '10G',  # Cache plus large
             'buffer_size': '128M',
             'read_chunk': '64M',
-            'transfers': '8',
-            'checkers': '16',
-            'timeout': '30m',
-            'low_level_retries': '3',
-            'dir_cache': '24h',
+            'transfers': '4',     # Réduit de 8 à 4 pour MEGA
+            'checkers': '8',      # Réduit de 16 à 8 pour MEGA
+            'timeout': '120m',    # Timeout plus long
+            'contimeout': '600s', # Connection timeout plus long
+            'low_level_retries': '20',
+            'retries': '20',
+            'retries_sleep': '60s',
+            'dir_cache': '72h',
             'attr_timeout': '8760h',
         },
         'power': {
@@ -140,7 +146,10 @@ def get_rclone_profile(profile='lite'):
             'transfers': '16',
             'checkers': '32',
             'timeout': '60m',
-            'low_level_retries': '5',
+            'contimeout': '300s',
+            'low_level_retries': '10',
+            'retries': '10',
+            'retries_sleep': '30s',
             'dir_cache': '24h',
             'attr_timeout': '8760h',
         },
@@ -151,7 +160,10 @@ def get_rclone_profile(profile='lite'):
             'transfers': '32',
             'checkers': '64',
             'timeout': '60m',
-            'low_level_retries': '5',
+            'contimeout': '300s',
+            'low_level_retries': '10',
+            'retries': '10',
+            'retries_sleep': '30s',
             'dir_cache': '24h',
             'attr_timeout': '8760h',
         }

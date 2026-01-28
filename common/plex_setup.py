@@ -176,17 +176,21 @@ nohup rclone mount {remote_name}:{rclone_remote} {mount_point} \\
   --transfers {config['transfers']} \\
   --checkers {config['checkers']} \\
   --timeout {config['timeout']} \\
-  --contimeout 120s \\
+  --contimeout {config['contimeout']} \\
   --low-level-retries {config['low_level_retries']} \\
+  --retries {config['retries']} \\
+  --retries-sleep {config['retries_sleep']} \\
   --dir-cache-time {config['dir_cache']} \\
   --attr-timeout {config['attr_timeout']} \\
-  --poll-interval 0 \\
+  --poll-interval 1m \\
   --s3-no-head \\
   --allow-other \\
   --uid 1000 \\
   --gid 1000 \\
   --log-level INFO \\
   --log-file={log_file} \\
+  --stats 5m \\
+  --stats-log-level INFO \\
   --daemon </dev/null >/dev/null 2>&1 &
 
 echo "⏳ Attente de stabilisation du montage (10s)..."
@@ -235,17 +239,21 @@ rclone mount {remote_name}:{rclone_remote} {mount_point} \\
     --transfers {config['transfers']} \\
     --checkers {config['checkers']} \\
     --timeout {config['timeout']} \\
-    --contimeout 120s \\
+    --contimeout {config['contimeout']} \\
     --low-level-retries {config['low_level_retries']} \\
+    --retries {config['retries']} \\
+    --retries-sleep {config['retries_sleep']} \\
     --dir-cache-time {config['dir_cache']} \\
     --attr-timeout {config['attr_timeout']} \\
-    --poll-interval 0 \\
+    --poll-interval 1m \\
     --s3-no-head \\
     --allow-other \\
     --uid 1000 \\
     --gid 1000 \\
     --log-level INFO \\
     --log-file={log_file} \\
+    --stats 5m \\
+    --stats-log-level INFO \\
     --daemon
     """)
 
@@ -1111,6 +1119,298 @@ def stop_plex(ip, container='plex', timeout=30):
         execute_command(ip, f"docker kill {container}", check=False)
 
     print(f"✅ Conteneur {container} arrêté")
+
+
+def verify_rclone_mount_healthy_simple(ip, mount_point='/mnt/s3-media', timeout=30):
+    """
+    Vérifie que le montage rclone est fonctionnel (version simple sans lecture fichier).
+
+    Cette version ne fait que les tests 1 et 2 (mountpoint + ls).
+    Utilisée après un remontage pour éviter les faux négatifs avec MEGA.
+
+    Args:
+        ip: 'localhost' ou IP remote
+        mount_point: Point de montage à vérifier
+        timeout: Timeout en secondes pour le test d'accès
+
+    Returns:
+        dict: {
+            'healthy': bool,
+            'error': str|None,
+            'response_time': float
+        }
+    """
+    import time as time_module
+    start = time_module.time()
+
+    # Test 1: Vérifier que le point de montage existe
+    result = execute_command(ip, f"mountpoint -q {mount_point}", check=False, capture_output=True)
+    if result.returncode != 0:
+        return {
+            'healthy': False,
+            'error': f"Point de montage {mount_point} non actif",
+            'response_time': time_module.time() - start
+        }
+
+    # Test 2: Vérifier l'accès avec timeout (détecte les sockets morts)
+    test_cmd = f"timeout {timeout} ls {mount_point} > /dev/null 2>&1"
+    result = execute_command(ip, test_cmd, check=False, capture_output=True)
+
+    response_time = time_module.time() - start
+
+    if result.returncode == 124:  # Timeout
+        return {
+            'healthy': False,
+            'error': f"Timeout ({timeout}s) - socket probablement déconnecté",
+            'response_time': response_time
+        }
+    elif result.returncode != 0:
+        return {
+            'healthy': False,
+            'error': f"Erreur d'accès au montage (code {result.returncode})",
+            'response_time': response_time
+        }
+
+    return {
+        'healthy': True,
+        'error': None,
+        'response_time': response_time
+    }
+
+
+def verify_rclone_mount_healthy(ip, mount_point='/mnt/s3-media', timeout=30):
+    """
+    Vérifie que le montage rclone est fonctionnel (pas de socket déconnecté).
+
+    Effectue 3 tests progressifs:
+    1. Vérification que le point de montage est actif
+    2. Lecture du contenu du répertoire (metadata)
+    3. Lecture réelle d'un fichier (détecte les I/O bloqués silencieusement)
+
+    Args:
+        ip: 'localhost' ou IP remote
+        mount_point: Point de montage à vérifier
+        timeout: Timeout en secondes pour le test d'accès (défaut: 30s pour MEGA)
+
+    Returns:
+        dict: {
+            'healthy': bool,      # True si le montage est fonctionnel
+            'error': str|None,    # Message d'erreur si échec
+            'response_time': float # Temps de réponse en secondes
+        }
+    """
+    import time as time_module
+    start = time_module.time()
+
+    # Test 1: Vérifier que le point de montage existe
+    result = execute_command(ip, f"mountpoint -q {mount_point}", check=False, capture_output=True)
+    if result.returncode != 0:
+        return {
+            'healthy': False,
+            'error': f"Point de montage {mount_point} non actif",
+            'response_time': time_module.time() - start
+        }
+
+    # Test 2: Vérifier l'accès avec timeout (détecte les sockets morts)
+    test_cmd = f"timeout {timeout} ls {mount_point} > /dev/null 2>&1"
+    result = execute_command(ip, test_cmd, check=False, capture_output=True)
+
+    if result.returncode == 124:  # Timeout
+        return {
+            'healthy': False,
+            'error': f"Timeout ({timeout}s) - socket probablement déconnecté",
+            'response_time': time_module.time() - start
+        }
+    elif result.returncode != 0:
+        return {
+            'healthy': False,
+            'error': f"Erreur d'accès au montage (code {result.returncode})",
+            'response_time': time_module.time() - start
+        }
+
+    # Test 3: Lecture réelle d'un fichier (pas juste metadata)
+    # Détecte les cas où ls passe mais l'I/O est bloqué silencieusement
+    # Note: On limite la recherche à maxdepth 3 pour éviter un scan complet du bucket
+    # et on cherche dans Music/ en priorité (répertoire le plus utilisé)
+    test_read_cmd = f"""timeout {timeout} sh -c '
+        # Essayer d abord dans Music (sous-répertoire courant)
+        file=$(find {mount_point}/Music -maxdepth 3 -type f \\( -name "*.mp3" -o -name "*.flac" -o -name "*.m4a" \\) 2>/dev/null | head -1)
+        # Fallback sur tout le mount si Music n existe pas
+        if [ -z "$file" ]; then
+            file=$(find {mount_point} -maxdepth 3 -type f \\( -name "*.mp3" -o -name "*.flac" -o -name "*.m4a" -o -name "*.mp4" -o -name "*.mkv" \\) 2>/dev/null | head -1)
+        fi
+        if [ -n "$file" ]; then
+            head -c 100 "$file" > /dev/null 2>&1
+            echo "OK: $file"
+        else
+            # Pas de fichier trouvé, mais le mount semble OK
+            echo "OK: no_file_found"
+        fi
+    '"""
+    result = execute_command(ip, test_read_cmd, check=False, capture_output=True)
+
+    response_time = time_module.time() - start
+
+    if result.returncode == 124:  # Timeout sur la lecture
+        return {
+            'healthy': False,
+            'error': f"Timeout lecture fichier ({timeout}s) - I/O bloqué",
+            'response_time': response_time
+        }
+
+    return {
+        'healthy': True,
+        'error': None,
+        'response_time': response_time
+    }
+
+
+def remount_s3_if_needed(ip, rclone_remote, profile='lite', mount_point='/mnt/s3-media',
+                         cache_dir=None, log_file=None, config_path=None, max_retries=3,
+                         skip_lock=False):
+    """
+    Vérifie le montage rclone et remonte si nécessaire.
+
+    Args:
+        ip: 'localhost' ou IP remote
+        rclone_remote: Nom du bucket/chemin S3
+        profile: Profil de configuration
+        mount_point: Point de montage
+        cache_dir: Répertoire de cache rclone
+        log_file: Fichier de logs rclone
+        config_path: Chemin du fichier rclone.conf
+        max_retries: Nombre max de tentatives de remontage
+        skip_lock: Si True, ne pas acquérir le lock global (appelé depuis MountMonitor)
+
+    Returns:
+        bool: True si le montage est fonctionnel, False si échec après retries
+    """
+    # Importer le lock global du MountMonitor (import tardif pour éviter les dépendances circulaires)
+    from common.mount_monitor import MountHealthMonitor
+    global_lock = MountHealthMonitor.get_global_lock()
+
+    # Vérification initiale
+    health = verify_rclone_mount_healthy(ip, mount_point)
+    if health['healthy']:
+        return True
+
+    print(f"⚠️  Montage rclone défaillant: {health['error']}")
+
+    # Acquérir le lock global si nécessaire (évite les remontages concurrents)
+    lock_acquired = False
+    if not skip_lock:
+        if not global_lock.acquire(blocking=False):
+            print(f"⏳ Remontage déjà en cours par MountMonitor, attente...")
+            # Attendre que le MountMonitor finisse son remontage
+            global_lock.acquire(blocking=True)
+            global_lock.release()
+            # Re-vérifier après l'attente
+            health = verify_rclone_mount_healthy(ip, mount_point)
+            if health['healthy']:
+                print(f"✅ Montage restauré par MountMonitor")
+                return True
+            # Si toujours pas OK, on continue avec notre propre remontage
+            global_lock.acquire(blocking=True)
+        lock_acquired = True
+
+    try:
+        # Auto-détection du cache_dir si non fourni
+        if cache_dir is None:
+            if ip == 'localhost':
+                cache_dir = os.path.expanduser('~/tmp/rclone-cache')
+            else:
+                cache_dir = '/mnt/rclone-cache'
+
+        for attempt in range(1, max_retries + 1):
+            print(f"🔄 Tentative de remontage {attempt}/{max_retries}...")
+
+            # Démontage forcé
+            execute_command(ip, f"pkill -9 -f 'rclone mount.*{mount_point}' || true", check=False)
+            time.sleep(3)
+            execute_command(ip, f"fusermount3 -uz {mount_point} || true", check=False)
+            execute_command(ip, f"fusermount -uz {mount_point} || true", check=False)
+            time.sleep(2)
+
+            # Nettoyage du cache VFS rclone (peut contenir des handles corrompus)
+            print(f"   🧹 Nettoyage du cache rclone...")
+            execute_command(ip, f"rm -rf {cache_dir}/vfs/* 2>/dev/null || true", check=False)
+
+            # Cooldown pour laisser MEGA récupérer (augmente avec chaque tentative)
+            cooldown = 10 * attempt  # 10s, 20s, 30s
+            print(f"   ⏳ Cooldown {cooldown}s avant remontage...")
+            time.sleep(cooldown)
+
+            # Remontage
+            try:
+                mount_s3(ip, rclone_remote, profile=profile, mount_point=mount_point,
+                         cache_dir=cache_dir, log_file=log_file, config_path=config_path)
+            except Exception as e:
+                print(f"   ❌ Erreur de remontage: {e}")
+                continue
+
+            # Vérification post-remontage (test simple: ls seulement, pas de lecture fichier)
+            # Le test de lecture fichier est trop strict pour MEGA qui peut être lent
+            print(f"   🔍 Vérification post-remontage...")
+            time.sleep(10)  # Attendre que rclone soit vraiment prêt
+            health = verify_rclone_mount_healthy_simple(ip, mount_point, timeout=30)
+            if health['healthy']:
+                print(f"   ✅ Remontage réussi (temps de réponse: {health['response_time']:.2f}s)")
+                return True
+
+            print(f"   ❌ Remontage échoué: {health['error']}")
+
+        print(f"❌ Impossible de restaurer le montage après {max_retries} tentatives")
+        return False
+
+    finally:
+        if lock_acquired:
+            global_lock.release()
+
+
+def ensure_mount_healthy(ip, rclone_remote, profile, mount_point, cache_dir, log_file, phase_name):
+    """
+    Vérifie que le montage rclone est fonctionnel avant une phase critique.
+    Remonte automatiquement si nécessaire.
+
+    Args:
+        ip: 'localhost' ou IP remote
+        rclone_remote: Nom du bucket S3
+        profile: Profil rclone à utiliser
+        mount_point: Point de montage S3
+        cache_dir: Répertoire de cache rclone
+        log_file: Fichier de logs rclone
+        phase_name: Nom de la phase pour les logs
+
+    Returns:
+        bool: True si le montage est fonctionnel, False si échec
+    """
+    print(f"   🔍 Vérification du montage S3...", end=" ", flush=True)
+    health = verify_rclone_mount_healthy(ip, mount_point)
+
+    if health['healthy']:
+        print(f"✅ ({health['response_time']:.1f}s)")
+        return True
+
+    print("❌")
+    print(f"\n⚠️  Montage S3 défaillant avant {phase_name}: {health['error']}")
+    print("🔄 Tentative de remontage automatique...")
+
+    success = remount_s3_if_needed(
+        ip,
+        rclone_remote,
+        profile=profile,
+        mount_point=mount_point,
+        cache_dir=cache_dir,
+        log_file=log_file,
+        max_retries=3
+    )
+
+    if success:
+        print(f"✅ Montage restauré, poursuite de {phase_name}")
+    else:
+        print(f"❌ Impossible de restaurer le montage pour {phase_name}")
+
+    return success
 
 
 def verify_plex_pass_active(ip, container='plex', plex_token=None, timeout=120, check_interval=10):

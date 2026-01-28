@@ -64,7 +64,8 @@ from common.plex_setup import (
     collect_plex_logs,
     disable_all_background_tasks,
     enable_music_analysis_only,
-    enable_all_analysis
+    enable_all_analysis,
+    ensure_mount_healthy
 )
 from common.plex_scan import (
     trigger_sonic_analysis,
@@ -118,8 +119,8 @@ def main():
                        help='Traiter uniquement la section Musique (skip autres sections)')
     parser.add_argument('--force-refresh', action='store_true',
                        help='Refresh Metadata avant Sonic (images, paroles, matching)')
-    parser.add_argument('--profile', choices=['local', 'cloud'],
-                        default='local', help='Profil d\'exécution (timeouts, monitoring)')
+    parser.add_argument('--monitoring', choices=['local', 'cloud'],
+                        default='local', help='Profil monitoring: local (timeouts courts), cloud (patient)')
 
     args = parser.parse_args()
 
@@ -339,6 +340,13 @@ def main():
             if music_section_id:
                 print(f"   Section Musique trouvée: [{music_section_id}] {music_section_name}")
 
+                # Healthcheck avant scan
+                if not ensure_mount_healthy(ip, env['S3_BUCKET'], rclone_profile,
+                                            str(MOUNT_DIR), str(CACHE_DIR), str(LOG_FILE), "scan Musique"):
+                    print("❌ Abandon du scan - montage S3 inaccessible")
+                    import sys
+                    sys.exit(1)
+
                 # Scan avec ou sans filtre
                 if args.filter:
                     # Scan filtré via scan_section_incrementally
@@ -395,6 +403,14 @@ def main():
                 if args.force_refresh:
                     print("\n6.4a Refresh Metadata (images, paroles, matching)...")
                     print("   ⚠️  Cette phase peut prendre plusieurs heures sur une grosse bibliothèque")
+
+                    # Healthcheck avant refresh
+                    if not ensure_mount_healthy(ip, env['S3_BUCKET'], rclone_profile,
+                                                str(MOUNT_DIR), str(CACHE_DIR), str(LOG_FILE), "refresh metadata"):
+                        print("❌ Abandon du refresh - montage S3 inaccessible")
+                        import sys
+                        sys.exit(1)
+
                     trigger_section_scan(ip, 'plex', plex_token, music_section_id, force=True)
 
                     # Utiliser le profil metadata_refresh avec timeout étendu (4h)
@@ -416,10 +432,18 @@ def main():
 
                 # 6.4c Lancer Sonic (sans --force, le refresh a été fait séparément)
                 print("\n6.4c Lancement analyse Sonic...")
+
+                # Healthcheck avant Sonic
+                if not ensure_mount_healthy(ip, env['S3_BUCKET'], rclone_profile,
+                                            str(MOUNT_DIR), str(CACHE_DIR), str(LOG_FILE), "analyse Sonic"):
+                    print("❌ Abandon de Sonic - montage S3 inaccessible")
+                    import sys
+                    sys.exit(1)
+
                 trigger_sonic_analysis(ip, music_section_id, 'plex')
 
                 # Monitoring DB-based avec profil adapté
-                monitoring_profile = 'cloud_intensive' if args.profile == 'cloud' else 'local_quick'
+                monitoring_profile = 'cloud_intensive' if args.monitoring == 'cloud' else 'local_quick'
                 monitoring_params = get_monitoring_params(monitoring_profile)
 
                 sonic_result = wait_sonic_complete(
@@ -437,7 +461,7 @@ def main():
                 print(f"      Raison   : {sonic_result['reason']}")
 
             # 6.5 Export intermédiaire (si profil cloud)
-            if args.profile == 'cloud':
+            if args.monitoring == 'cloud':
                 print("\n6.5 Export intermédiaire...")
                 export_intermediate(ip, 'plex', str(PLEX_CONFIG), '.', label="post_sonic")
 
@@ -455,6 +479,13 @@ def main():
                                   if info['type'] != 'artist']
 
                 if other_sections:
+                    # Healthcheck avant scan des autres sections
+                    if not ensure_mount_healthy(ip, env['S3_BUCKET'], rclone_profile,
+                                                str(MOUNT_DIR), str(CACHE_DIR), str(LOG_FILE), "scan autres sections"):
+                        print("❌ Abandon du scan - montage S3 inaccessible")
+                        import sys
+                        sys.exit(1)
+
                     for section_name, info in other_sections:
                         # Étape 1: Scan
                         print(f"\n   🔍 Scan '{section_name}' (ID: {info['id']}, type: {info['type']})")

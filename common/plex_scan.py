@@ -900,7 +900,7 @@ def get_section_activity(ip, container, plex_token, section_id):
     }
 
 
-def wait_section_idle(ip, container, plex_token, section_id, section_type=None, phase='scan', config_path=None, timeout=3600, check_interval=30, consecutive_idle=3):
+def wait_section_idle(ip, container, plex_token, section_id, section_type=None, phase='scan', config_path=None, timeout=3600, check_interval=30, consecutive_idle=3, health_check_fn=None):
     """
     Attend qu'une section soit VRAIMENT inactive.
 
@@ -915,9 +915,11 @@ def wait_section_idle(ip, container, plex_token, section_id, section_type=None, 
         timeout: Timeout en secondes (défaut: 3600 = 1h, 4h pour photos)
         check_interval: Intervalle entre checks (défaut: 30s)
         consecutive_idle: Nombre de checks idle consécutifs requis (défaut: 3)
+        health_check_fn: Fonction optionnelle pour vérifier la santé du montage
+                         Doit retourner {'healthy': bool, 'error': str|None}
 
     Returns:
-        bool: True si idle atteint, False si timeout
+        bool: True si idle atteint, False si timeout ou health check échoué
     """
     # Icônes et messages selon la phase
     if phase == 'analyze':
@@ -945,6 +947,14 @@ def wait_section_idle(ip, container, plex_token, section_id, section_type=None, 
 
     while time.time() - start_time < timeout:
         elapsed = int(time.time() - start_time)
+
+        # Vérifier la santé du montage si callback fourni
+        if health_check_fn:
+            health = health_check_fn()
+            if not health.get('healthy', True):
+                print(f"   [{time.strftime('%H:%M:%S')}] ⚠️  Health check failed: {health.get('error')}")
+                return False
+
         activity = get_section_activity(ip, container, plex_token, section_id)
 
         if activity['is_idle']:
@@ -1184,7 +1194,7 @@ def get_unanalyzed_track_count(ip, config_path, section_id=None):
         }
 
 
-def wait_sonic_complete(ip, config_path, section_id, container='plex', timeout=86400, check_interval=120):
+def wait_sonic_complete(ip, config_path, section_id, container='plex', timeout=86400, check_interval=120, health_check_fn=None):
     """
     Attend la fin du Sonic avec indicateur DB fiable.
 
@@ -1195,6 +1205,8 @@ def wait_sonic_complete(ip, config_path, section_id, container='plex', timeout=8
         container: Nom du conteneur
         timeout: Timeout absolu en secondes (défaut: 86400 = 24h)
         check_interval: Intervalle entre checks (défaut: 120s = 2min)
+        health_check_fn: Fonction optionnelle pour vérifier la santé du montage
+                         Doit retourner {'healthy': bool, 'error': str|None}
 
     Returns:
         dict: {
@@ -1203,7 +1215,7 @@ def wait_sonic_complete(ip, config_path, section_id, container='plex', timeout=8
             'final_count': int,
             'delta': int,
             'duration_minutes': int,
-            'reason': str  # 'completed', 'stall', 'timeout', 'already_complete'
+            'reason': str  # 'completed', 'stall', 'timeout', 'already_complete', 'health_check_failed'
         }
     """
     # Vérifier d'abord s'il y a des pistes à analyser
@@ -1232,6 +1244,22 @@ def wait_sonic_complete(ip, config_path, section_id, container='plex', timeout=8
 
     while time.time() - start_time < timeout:
         elapsed = int(time.time() - start_time)
+
+        # Vérifier la santé du montage si callback fourni
+        if health_check_fn:
+            health = health_check_fn()
+            if not health.get('healthy', True):
+                duration_minutes = int(elapsed / 60)
+                print(f"\n   [{time.strftime('%H:%M:%S')}] ⚠️  Health check failed: {health.get('error')}")
+                final_count = get_sonic_count_from_db(ip, config_path)
+                return {
+                    'success': False,
+                    'initial_count': initial_count,
+                    'final_count': final_count,
+                    'delta': final_count - initial_count,
+                    'duration_minutes': duration_minutes,
+                    'reason': 'health_check_failed'
+                }
 
         # Compter les pistes analysées
         current_count = get_sonic_count_from_db(ip, config_path)
