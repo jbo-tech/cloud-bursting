@@ -234,8 +234,10 @@ def main():
         )
         mount_monitor.start()
 
-        # Claim Token
+        # Claim Token (avec rappel si le monitor affiche des messages)
+        mount_monitor.set_pending_input("⏳ En attente du PLEX_CLAIM...")
         plex_claim = input("\n🔑 Entrez votre PLEX_CLAIM (depuis https://www.plex.tv/claim) : ").strip()
+        mount_monitor.clear_pending_input()
         if not plex_claim:
             print("❌ PLEX_CLAIM requis")
             return

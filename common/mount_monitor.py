@@ -87,10 +87,37 @@ class MountHealthMonitor:
             'stop_time': None
         }
 
+        # Message de rappel pour input en attente
+        self._pending_input_message = None
+
     @classmethod
     def get_global_lock(cls):
         """Retourne le lock global pour synchroniser les remontages."""
         return cls._global_remount_lock
+
+    def set_pending_input(self, message):
+        """
+        Définit un message de rappel à afficher après chaque action du monitor.
+
+        Utile quand un input() est en attente et que les messages du monitor
+        peuvent faire croire que le script a avancé.
+
+        Args:
+            message: Message à afficher (ex: "⏳ En attente du PLEX_CLAIM...")
+        """
+        with self._lock:
+            self._pending_input_message = message
+
+    def clear_pending_input(self):
+        """Efface le message de rappel (quand l'input a été reçu)."""
+        with self._lock:
+            self._pending_input_message = None
+
+    def _print_pending_reminder(self):
+        """Affiche le rappel d'input en attente si défini."""
+        with self._lock:
+            if self._pending_input_message:
+                print(f"   {self._pending_input_message}")
 
     def start(self):
         """Démarre le thread de monitoring en arrière-plan."""
@@ -157,6 +184,7 @@ class MountHealthMonitor:
             if not self._global_remount_lock.acquire(blocking=False):
                 # Un autre thread fait déjà un remontage, on attend
                 print(f"\n   [MountMonitor] ⏳ Remontage en cours par un autre processus, attente...")
+                self._print_pending_reminder()
                 return
 
             try:
@@ -183,6 +211,9 @@ class MountHealthMonitor:
                     self._last_health = {'healthy': True, 'error': None, 'response_time': 0}
                 else:
                     print(f"   [MountMonitor] ❌ Échec du remontage")
+
+                # Rappel qu'un input est en attente (si applicable)
+                self._print_pending_reminder()
             finally:
                 self._global_remount_lock.release()
 
