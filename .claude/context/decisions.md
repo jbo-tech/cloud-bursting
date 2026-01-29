@@ -170,3 +170,24 @@ Technical decisions and their context. Added via `/retro`.
 **Context**: Confusion entre deux arguments aux noms similaires mais aux rôles différents. `--instance` (lite/standard/power/superpower) contrôle les ressources (rclone, Docker limits). `--profile` contrôlait les timeouts de monitoring mais le nom suggérait autre chose. `--monitoring` (local/cloud) est plus explicite.
 **Alternatives considered**: `--timeout-profile` (trop long), `--patience` (pas assez technique), `--run-mode` (suggère d'autres différences).
 **Date**: 2026-01-28
+
+### MountHealthMonitor before user prompt
+
+**Decision**: Démarrer MountHealthMonitor AVANT le prompt PLEX_CLAIM, pas après.
+**Context**: Le montage rclone peut devenir instable pendant que l'utilisateur entre son claim token. Si le délai est long (plusieurs minutes), le montage peut être défaillant au démarrage de Plex. En démarrant le monitor avant le prompt, il surveille et peut remonter automatiquement si nécessaire.
+**Alternatives considered**: Vérification ponctuelle avant Plex (ne surveille pas pendant le délai), pas de changement (montage potentiellement mort au démarrage).
+**Date**: 2026-01-29
+
+### Sonic analysis triggered by enable_music_analysis_only(), not enable_plex_analysis_via_api()
+
+**Decision**: Utiliser enable_music_analysis_only() en phase 6.3 pour déclencher Sonic. Ne pas utiliser enable_plex_analysis_via_api() avant le scan.
+**Context**: enable_plex_analysis_via_api() déclenche le Butler DeepMediaAnalysis globalement. Les processus `--analyze-deeply` sont détectés comme "scanner running" par wait_section_idle(), causant un timeout de 144 minutes. enable_music_analysis_only() est appelée APRÈS le scan, au bon moment.
+**Alternatives considered**: Modifier wait_section_idle() pour distinguer --scan vs --analyze-deeply (plus complexe, risque de régression), garder enable_plex_analysis_via_api() avec un flag pour ne pas déclencher Butler (API incohérente).
+**Date**: 2026-01-29
+
+### Include rclone.log in exported archives
+
+**Decision**: Ajouter paramètre `rclone_log` à collect_plex_logs() et l'inclure dans l'archive combinée.
+**Context**: Les logs rclone sont essentiels pour diagnostiquer les problèmes de montage S3 (déconnexions, timeouts, erreurs I/O). Sans ces logs dans l'export, le diagnostic post-mortem est incomplet.
+**Alternatives considered**: Export séparé de rclone.log (deux archives à gérer), copie manuelle (oubli fréquent).
+**Date**: 2026-01-29

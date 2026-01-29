@@ -150,6 +150,20 @@ Errors encountered and how to avoid them. Added via `/retro`.
 **Solution**: Augmenter les paramètres de résilience: `--timeout 30m`, `--contimeout 300s`, `--retries 10`, `--retries-sleep 30s`, `--low-level-retries 10`. Ajouter `--stats 5m` pour monitoring.
 **Date**: 2026-01-24
 
+### MountHealthMonitor started too late
+
+**Problem**: Le montage rclone devient instable pendant le prompt PLEX_CLAIM (délai utilisateur). Plex démarre avec un montage défaillant.
+**Cause**: MountHealthMonitor démarré APRÈS le prompt utilisateur, pas avant. Pendant que l'utilisateur entre son claim token (potentiellement plusieurs minutes), le montage n'est pas surveillé.
+**Solution**: Démarrer MountHealthMonitor AVANT le prompt PLEX_CLAIM. Le monitor surveille le montage pendant le délai utilisateur et peut faire un remontage automatique si nécessaire.
+**Date**: 2026-01-29
+
+### enable_plex_analysis_via_api() called before scan
+
+**Problem**: wait_section_idle() timeout après 144 minutes. Le scan CLI termine rapidement mais l'attente est bloquée.
+**Cause**: enable_plex_analysis_via_api() appelée en phase 4 (avant scan) déclenche le Butler DeepMediaAnalysis. Les processus `Plex Media Scanner --analyze-deeply` sont détectés par pgrep comme "scanner running", bloquant wait_section_idle().
+**Solution**: Ne PAS appeler enable_plex_analysis_via_api() avant le scan. Les analyses Sonic sont correctement déclenchées par enable_music_analysis_only() en phase 6.3 (après le scan). Pour les autres sections, trigger_section_analyze() déclenche l'analyse par section via API.
+**Date**: 2026-01-29
+
 ### Confusing Plex Scanner flags behavior
 
 **Problem**: Flag `--force` fait plus que forcer l'analyse - il déclenche aussi un refresh de toutes les métadonnées.

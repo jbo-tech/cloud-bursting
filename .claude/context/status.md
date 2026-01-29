@@ -6,7 +6,7 @@ Déléguer les tâches d'indexation intensives de Plex (scan, génération de m�
 
 ## Current focus
 
-Validation du fix feedback visuel + test local en cours pour valider les corrections rclone.
+Corrections suite à l'analyse des logs test local (20260127_150937). Trois problèmes majeurs identifiés et corrigés, en attente de validation.
 
 **Scripts principaux:**
 - `automate_scan.py` - Cloud scan from scratch ✅
@@ -38,6 +38,27 @@ Validation du fix feedback visuel + test local en cours pour valider les correct
 ## Log
 
 <!-- Entries added by /retro, newest first -->
+
+### 2026-01-29 - Fix trois problèmes majeurs identifiés via analyse logs
+
+- Done:
+  - Analyse logs test local (20260127_150937): identifié 3 problèmes majeurs
+  - **Fix 1 - MountHealthMonitor timing**: déplacé AVANT prompt PLEX_CLAIM (pas après)
+    - test_delta_sync.py, automate_delta_sync.py: réordonné monitor → prompt → Plex
+    - test_scan_local.py, automate_scan.py: ajouté MountHealthMonitor (manquait)
+  - **Fix 2 - Butler interference**: supprimé appels prématurés à enable_plex_analysis_via_api()
+    - Cette fonction déclenchait le Butler DeepMediaAnalysis avant le scan
+    - Les processus --analyze-deeply bloquaient wait_section_idle (144 min timeout)
+    - Analyses Sonic correctement déclenchées par enable_music_analysis_only() en phase 6.3
+  - **Fix 3 - rclone.log dans export**: ajouté paramètre rclone_log à collect_plex_logs()
+    - Modifié common/plex_setup.py pour supporter le téléchargement depuis remote
+    - Mis à jour tous les appels dans les 4 scripts
+  - Nettoyage imports inutilisés (enable_plex_analysis_via_api supprimé où non utilisé)
+  - Syntaxe vérifiée pour tous les fichiers modifiés
+- Next:
+  - Tester les corrections localement
+  - Valider que wait_section_idle ne timeout plus
+  - Valider que rclone.log apparaît dans les archives exportées
 
 ### 2026-01-28 - Renommage argument --profile → --monitoring
 
