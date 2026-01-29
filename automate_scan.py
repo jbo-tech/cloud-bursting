@@ -53,7 +53,6 @@ from common.plex_setup import (
     get_plex_token,
     add_library,
     verify_plex_pass_active,
-    enable_plex_analysis_via_api,
     collect_plex_logs,
     wait_plex_ready_for_libraries,
     disable_all_background_tasks,
@@ -72,6 +71,7 @@ from common.plex_scan import (
     trigger_section_analyze,
     export_intermediate
 )
+from common.mount_monitor import MountHealthMonitor
 from common.scaleway import (
     INSTANCE_PROFILES,
     INSTANCE_ID_FILE,
@@ -157,6 +157,7 @@ Profils d'instance:
     print("=" * 60)
 
     instance_ip = None
+    mount_monitor = None
 
     try:
         # === PHASE 1: CRÉATION INSTANCE ===
@@ -197,6 +198,19 @@ Profils d'instance:
         print("\n" + "=" * 60)
         print("PHASE 4: DÉMARRAGE PLEX")
         print("=" * 60)
+
+        # Démarrer le monitoring du montage AVANT le prompt utilisateur
+        # (surveille le montage pendant que l'utilisateur entre son claim)
+        mount_monitor = MountHealthMonitor(
+            ip=instance_ip,
+            mount_point='/mnt/s3-media',
+            rclone_remote=env['S3_BUCKET'],
+            profile=profile,
+            cache_dir='/tmp/rclone-cache',
+            log_file='/var/log/rclone.log',
+            check_interval=60  # Vérification toutes les minutes
+        )
+        mount_monitor.start()
 
         # Claim token
         plex_claim = input("\n🔑 Entrez votre PLEX_CLAIM (depuis https://www.plex.tv/claim) : ").strip()
@@ -423,7 +437,8 @@ Profils d'instance:
         # 8.1 Collecte logs Plex AVANT arrêt
         if args.collect_logs or args.save_output:
             print("\n8.1 Collecte des logs Plex (conteneur actif)...")
-            collect_plex_logs(instance_ip, 'plex', prefix="final", timestamp=RUN_TIMESTAMP)
+            collect_plex_logs(instance_ip, 'plex', prefix="final",
+                              rclone_log='/var/log/rclone.log', timestamp=RUN_TIMESTAMP)
 
         # 8.2 Arrêter Plex
         print("\n8.2 Arrêt de Plex...")
@@ -462,6 +477,10 @@ Profils d'instance:
         import traceback
         traceback.print_exc()
     finally:
+        # Arrêter le monitoring du montage
+        if mount_monitor:
+            mount_monitor.stop()
+
         # === DIAGNOSTIC POST-MORTEM ===
         if instance_ip:
             print("\n" + "=" * 60)
@@ -486,7 +505,8 @@ Profils d'instance:
             # Collecter les logs si demandé
             if args.collect_logs or args.save_output:
                 terminal_log = tee_logger.log_path if tee_logger else None
-                collect_plex_logs(instance_ip, 'plex', prefix="final", terminal_log=terminal_log)
+                collect_plex_logs(instance_ip, 'plex', prefix="final", terminal_log=terminal_log,
+                                  rclone_log='/var/log/rclone.log')
 
         # Arrêter le TeeLogger
         if tee_logger:

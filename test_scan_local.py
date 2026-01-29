@@ -59,7 +59,6 @@ from common.plex_setup import (
     add_library,
     stop_plex,
     wait_plex_ready_for_libraries,
-    enable_plex_analysis_via_api,
     verify_plex_pass_active,
     collect_plex_logs,
     disable_all_background_tasks,
@@ -67,6 +66,7 @@ from common.plex_setup import (
     enable_all_analysis,
     ensure_mount_healthy
 )
+from common.mount_monitor import MountHealthMonitor
 from common.plex_scan import (
     trigger_sonic_analysis,
     get_monitoring_params,
@@ -160,6 +160,7 @@ def main():
 
         # Flag pour l'analyse Sonic (mis à jour après vérification Plex Pass)
         CAN_DO_SONIC = False
+        mount_monitor = None
 
         # 3. Préparation environnement
         print_phase_header(1, "PRÉPARATION")
@@ -220,7 +221,20 @@ def main():
         print(f"  ✅ {PLEX_CONFIG}")
         print(f"  ✅ {PLEX_CONFIG / 'transcode'}")
 
-        # 2. Claim Token
+        # Démarrer le monitoring du montage AVANT le prompt utilisateur
+        # (surveille le montage pendant que l'utilisateur entre son claim)
+        mount_monitor = MountHealthMonitor(
+            ip=ip,
+            mount_point=str(MOUNT_DIR),
+            rclone_remote=env['S3_BUCKET'],
+            profile=rclone_profile,
+            cache_dir=str(CACHE_DIR),
+            log_file=str(LOG_FILE),
+            check_interval=60  # Vérification toutes les minutes
+        )
+        mount_monitor.start()
+
+        # Claim Token
         plex_claim = input("\n🔑 Entrez votre PLEX_CLAIM (depuis https://www.plex.tv/claim) : ").strip()
         if not plex_claim:
             print("❌ PLEX_CLAIM requis")
@@ -279,9 +293,9 @@ def main():
         # Diagnostic avant création des bibliothèques
         debug_library_creation(ip, container='plex', plex_token=plex_token)
 
-        # Activer les analyses
-        if plex_token:
-            enable_plex_analysis_via_api(ip, 'plex', plex_token)
+        # Note: Les analyses Sonic seront activées en Phase 6 par enable_music_analysis_only()
+        # Ne PAS appeler enable_plex_analysis_via_api() ici car cela déclenche le Butler
+        # et interfère avec wait_section_idle() pendant le scan
 
         # === PHASE 5: Ajout des bibliothèques ===
         print_phase_header(5, "CONFIGURATION BIBLIOTHÈQUES")
@@ -515,7 +529,8 @@ def main():
         # Note: Le terminal log sera ajouté dans finally après tee_logger.stop()
         if args.collect_logs or args.save_output:
             print("\n8.1 Collecte des logs Plex (conteneur actif)...")
-            plex_logs_archive = collect_plex_logs(ip, 'plex', prefix="final", timestamp=RUN_TIMESTAMP)
+            plex_logs_archive = collect_plex_logs(ip, 'plex', prefix="final",
+                                                   rclone_log=str(LOG_FILE), timestamp=RUN_TIMESTAMP)
 
         # 8.2 Arrêter Plex
         print("\n8.2 Arrêt de Plex...")
@@ -555,6 +570,10 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
+        # Arrêter le monitoring du montage
+        if mount_monitor:
+            mount_monitor.stop()
+
         # === DIAGNOSTIC POST-MORTEM ===
         print("\n" + "=" * 60)
         print("🔍 DIAGNOSTIC POST-MORTEM")

@@ -73,7 +73,6 @@ from common.plex_setup import (
     wait_plex_fully_ready,
     get_plex_token,
     verify_plex_pass_active,
-    enable_plex_analysis_via_api,
     stop_plex,
     disable_all_background_tasks,
     enable_music_analysis_only,
@@ -251,14 +250,8 @@ def main():
         # === PHASE 4: DÉMARRAGE PLEX ===
         print_phase_header(4, "DÉMARRAGE PLEX")
 
-        # Claim token
-        plex_claim = input("\n🔑 Entrez votre PLEX_CLAIM (depuis https://www.plex.tv/claim) : ").strip()
-        if not plex_claim:
-            print("❌ PLEX_CLAIM requis")
-            sys.exit(1)
-
-        # Démarrer le monitoring continu du montage APRÈS le prompt utilisateur
-        # (évite les faux positifs pendant que l'utilisateur entre son claim)
+        # Démarrer le monitoring du montage AVANT le prompt utilisateur
+        # (surveille le montage pendant que l'utilisateur entre son claim)
         mount_monitor = MountHealthMonitor(
             ip=ip,
             mount_point=str(MOUNT_DIR),
@@ -269,6 +262,12 @@ def main():
             check_interval=60  # Vérification toutes les minutes
         )
         mount_monitor.start()
+
+        # Claim token
+        plex_claim = input("\n🔑 Entrez votre PLEX_CLAIM (depuis https://www.plex.tv/claim) : ").strip()
+        if not plex_claim:
+            print("❌ PLEX_CLAIM requis")
+            sys.exit(1)
 
         # Démarrer Plex avec la DB injectée
         start_plex_container(
@@ -297,9 +296,9 @@ def main():
             if not can_do_sonic:
                 print("⚠️  Plex Pass non actif - analyse Sonic indisponible")
 
-        # Activer les analyses
-        if plex_token:
-            enable_plex_analysis_via_api(ip, 'plex', plex_token)
+        # Note: Les analyses Sonic seront activées en Phase 6.3 par enable_music_analysis_only()
+        # Ne PAS appeler enable_plex_analysis_via_api() ici car cela déclenche le Butler
+        # et interfère avec wait_section_idle() pendant le scan
 
         # === PHASE 5: VÉRIFICATION BIBLIOTHÈQUES ===
         print_phase_header(5, "VÉRIFICATION BIBLIOTHÈQUES")
@@ -489,7 +488,8 @@ def main():
         if args.collect_logs or args.save_output:
             terminal_log = tee_logger.log_path if tee_logger else None
             # keep_terminal_log=True car TeeLogger écrit encore (snapshot intermédiaire)
-            collect_plex_logs(ip, 'plex', prefix="phase6", terminal_log=terminal_log, timestamp=RUN_TIMESTAMP, keep_terminal_log=True)
+            collect_plex_logs(ip, 'plex', prefix="phase6", terminal_log=terminal_log,
+                              rclone_log=str(LOG_FILE), timestamp=RUN_TIMESTAMP, keep_terminal_log=True)
 
         # === PHASE 7: VALIDATION AUTRES SECTIONS ===
         if not args.music_only:
@@ -559,7 +559,8 @@ def main():
         # Note: Le terminal log sera ajouté dans finally après tee_logger.stop()
         if args.collect_logs or args.save_output:
             print("\n8.1 Collecte des logs Plex (conteneur actif)...")
-            plex_logs_archive = collect_plex_logs(ip, 'plex', prefix="final", timestamp=RUN_TIMESTAMP)
+            plex_logs_archive = collect_plex_logs(ip, 'plex', prefix="final",
+                                                   rclone_log=str(LOG_FILE), timestamp=RUN_TIMESTAMP)
 
         # 8.2 Arrêt Plex
         print("\n8.2 Arrêt de Plex...")
