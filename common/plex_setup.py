@@ -953,9 +953,9 @@ def enable_all_analysis(ip, container, plex_token):
         return False
 
 
-def collect_plex_logs(ip, container, output_dir="logs", prefix="plex", terminal_log=None, timestamp=None, keep_terminal_log=False):
+def collect_plex_logs(ip, container, output_dir="logs", prefix="plex", terminal_log=None, rclone_log=None, timestamp=None, keep_terminal_log=False):
     """
-    Récupère les logs Plex pour debug, avec option d'inclure le log terminal.
+    Récupère les logs Plex pour debug, avec option d'inclure le log terminal et rclone.
 
     Args:
         ip: 'localhost' ou IP remote
@@ -963,6 +963,7 @@ def collect_plex_logs(ip, container, output_dir="logs", prefix="plex", terminal_
         output_dir: Répertoire de destination des logs (défaut: logs/)
         prefix: Préfixe pour le nom d'archive
         terminal_log: Chemin vers le fichier log terminal (optionnel)
+        rclone_log: Chemin vers le fichier log rclone (optionnel, sur l'hôte distant ou local)
         timestamp: Horodatage à utiliser (optionnel, généré si non fourni)
         keep_terminal_log: Si True, ne pas supprimer le fichier terminal après archivage
                           (utile si TeeLogger est encore actif)
@@ -1024,8 +1025,23 @@ def collect_plex_logs(ip, container, output_dir="logs", prefix="plex", terminal_
             return terminal_only_archive
         return None
 
-    # Si pas de terminal_log, retourner l'archive Plex seule
-    if not terminal_log or not os.path.exists(terminal_log):
+    # Vérifier si on a des logs supplémentaires à inclure
+    has_terminal = terminal_log and os.path.exists(terminal_log)
+    has_rclone = False
+    local_rclone_log = None
+
+    # Si rclone_log est spécifié, vérifier s'il existe (local ou remote)
+    if rclone_log:
+        if ip == 'localhost':
+            has_rclone = os.path.exists(rclone_log)
+            local_rclone_log = rclone_log if has_rclone else None
+        else:
+            # Vérifier si le fichier existe sur le remote
+            check_result = execute_command(ip, f"test -f {rclone_log} && echo 'OK'", capture_output=True, check=False)
+            has_rclone = 'OK' in check_result.stdout
+
+    # Si pas de logs supplémentaires, retourner l'archive Plex seule
+    if not has_terminal and not has_rclone:
         if ip == 'localhost':
             size_mb = os.path.getsize(archive_path) / (1024*1024)
             print(f"   ✅ Logs Plex collectés: {archive_path} ({size_mb:.1f} MB)")
@@ -1033,8 +1049,13 @@ def collect_plex_logs(ip, container, output_dir="logs", prefix="plex", terminal_
             print(f"   ✅ Logs Plex collectés: {archive_path}")
         return archive_path
 
-    # Créer une archive combinée (Plex + terminal)
-    print(f"   📦 Création archive combinée (Plex + terminal)...")
+    # Créer une archive combinée (Plex + terminal + rclone)
+    extras = []
+    if has_terminal:
+        extras.append("terminal")
+    if has_rclone:
+        extras.append("rclone")
+    print(f"   📦 Création archive combinée (Plex + {' + '.join(extras)})...")
 
     combined_archive = os.path.join(output_dir, f"{timestamp}_logs_{prefix}_all.tar.gz")
     temp_dir = tempfile.mkdtemp(prefix="plex_logs_")
@@ -1059,13 +1080,29 @@ def collect_plex_logs(ip, container, output_dir="logs", prefix="plex", terminal_
                 with tarfile.open(local_plex_archive, 'r:gz') as tar:
                     tar.extractall(plex_logs_dir)
 
+        # Si rclone_log est sur un remote, le télécharger
+        if has_rclone and ip != 'localhost':
+            local_rclone_log = os.path.join(temp_dir, "rclone.log")
+            execute_command(
+                'localhost',
+                f"scp -o StrictHostKeyChecking=no root@{ip}:{rclone_log} {local_rclone_log}",
+                check=False
+            )
+            if not os.path.exists(local_rclone_log):
+                local_rclone_log = None
+                has_rclone = False
+
         # Créer l'archive combinée
         with tarfile.open(combined_archive, 'w:gz') as tar:
             # Ajouter les logs Plex
             for item in os.listdir(plex_logs_dir):
                 tar.add(os.path.join(plex_logs_dir, item), arcname=f"plex_logs/{item}")
             # Ajouter le log terminal
-            tar.add(terminal_log, arcname='terminal.log')
+            if has_terminal:
+                tar.add(terminal_log, arcname='terminal.log')
+            # Ajouter le log rclone
+            if has_rclone and local_rclone_log and os.path.exists(local_rclone_log):
+                tar.add(local_rclone_log, arcname='rclone.log')
 
         # Supprimer l'archive Plex seule (remplacée par la combinée)
         if ip == 'localhost' and os.path.exists(archive_path):
