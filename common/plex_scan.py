@@ -5,7 +5,6 @@ Logique de scan, monitoring et export Plex
 import time
 import re
 import os
-from urllib.parse import quote
 from datetime import datetime
 from .executor import execute_command, docker_exec
 
@@ -1077,12 +1076,12 @@ def get_section_analyzed_count_from_db(ip, config_path, section_id, section_type
         return 0
 
     # Compter les items avec un thumb généré (signe d'analyse complète)
-    # user_thumb_url != '' indique un thumb généré
+    # user_thumb_url doit être non-NULL ET non-vide pour être considéré comme analysé
     sql_query = f"""
         SELECT COUNT(*) FROM metadata_items
         WHERE library_section_id={section_id}
         AND metadata_type={metadata_type}
-        AND (user_thumb_url != '' OR user_thumb_url IS NOT NULL)
+        AND user_thumb_url IS NOT NULL AND user_thumb_url != ''
     """
 
     cmd = f"sqlite3 '{db_path}' \"{sql_query}\""

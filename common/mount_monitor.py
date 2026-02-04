@@ -47,7 +47,8 @@ class MountHealthMonitor:
     _global_remount_lock = threading.Lock()
 
     def __init__(self, ip, mount_point, rclone_remote, profile,
-                 cache_dir, log_file, check_interval=120, remount_retries=3):
+                 cache_dir, log_file, check_interval=120, remount_retries=3,
+                 initial_delay=0):
         """
         Initialise le moniteur de santé.
 
@@ -60,6 +61,7 @@ class MountHealthMonitor:
             log_file: Fichier de logs rclone
             check_interval: Intervalle entre vérifications en secondes (défaut: 120)
             remount_retries: Nombre max de tentatives de remontage (défaut: 3)
+            initial_delay: Délai avant le premier check en secondes (défaut: 0)
         """
         self.ip = ip
         self.mount_point = mount_point
@@ -69,6 +71,7 @@ class MountHealthMonitor:
         self.log_file = log_file
         self.check_interval = check_interval
         self.remount_retries = remount_retries
+        self.initial_delay = initial_delay
 
         # État interne
         self._running = False
@@ -142,10 +145,25 @@ class MountHealthMonitor:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
 
-        self._print_stats()
+        # Acquisition du lock avec timeout pour éviter le deadlock
+        # si le thread monitoring est bloqué dans un appel SSH
+        if self._lock.acquire(timeout=2):
+            try:
+                self._print_stats_internal()
+            finally:
+                self._lock.release()
+        else:
+            print("   [MountMonitor] Stats indisponibles (lock timeout)")
 
     def _monitor_loop(self):
         """Boucle principale du monitoring (exécutée dans un thread)."""
+        # Délai initial pour laisser le temps au prompt input() de s'afficher
+        if self.initial_delay > 0:
+            for _ in range(self.initial_delay):
+                if not self._running:
+                    return
+                time.sleep(1)
+
         while self._running:
             try:
                 self._perform_health_check()
@@ -243,9 +261,9 @@ class MountHealthMonitor:
         with self._lock:
             return self._stats.copy()
 
-    def _print_stats(self):
-        """Affiche les statistiques de monitoring."""
-        stats = self.get_stats()
+    def _print_stats_internal(self):
+        """Affiche les statistiques de monitoring (appelé avec lock déjà acquis)."""
+        stats = self._stats.copy()
 
         duration = None
         if stats['start_time'] and stats['stop_time']:

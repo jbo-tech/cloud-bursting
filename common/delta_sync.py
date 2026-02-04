@@ -74,6 +74,24 @@ def inject_existing_db(ip, archive_path, plex_config_path, container='plex'):
         print(f"   ❌ DB non trouvée après extraction")
         return False
 
+    # 5b. Vérifier l'intégrité de la DB SQLite
+    print(f"   🔍 Vérification de l'intégrité de la DB...")
+    integrity_cmd = f"sqlite3 '{db_file}' 'PRAGMA integrity_check;'"
+    integrity_result = execute_command(ip, integrity_cmd, capture_output=True, check=False)
+
+    if integrity_result.returncode != 0:
+        print(f"   ❌ Erreur sqlite3: {integrity_result.stderr}")
+        return False
+
+    integrity_output = integrity_result.stdout.strip().lower()
+    if integrity_output != 'ok':
+        print(f"   ❌ DB corrompue: {integrity_result.stdout.strip()}")
+        print(f"   💡 L'archive source est probablement endommagée.")
+        print(f"   💡 Regénérez l'archive avec: ./export_zimaboard_db.sh")
+        return False
+
+    print(f"   ✅ Intégrité DB validée")
+
     # 6. Corriger les permissions (UID 1000 = plex dans le conteneur)
     print(f"   🔐 Correction des permissions...")
     execute_command(ip, f"chown -R 1000:1000 '{plex_config_path}'", check=False)
