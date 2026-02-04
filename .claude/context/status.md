@@ -6,7 +6,7 @@ Déléguer les tâches d'indexation intensives de Plex (scan, génération de m�
 
 ## Current focus
 
-Corrections suite à l'analyse des logs test local (20260127_150937). Trois problèmes majeurs identifiés et corrigés, en attente de validation.
+Correction bug `args.only` → `args.section` dans `test_delta_sync.py`. Audit réalisé avec revue expert infra.
 
 **Scripts principaux:**
 - `automate_scan.py` - Cloud scan from scratch ✅
@@ -38,6 +38,53 @@ Corrections suite à l'analyse des logs test local (20260127_150937). Trois prob
 ## Log
 
 <!-- Entries added by /retro, newest first -->
+
+### 2026-01-31 - Fix bug args.only + audit code
+
+- Done:
+  - Fix `AttributeError: 'Namespace' object has no attribute 'only'` dans test_delta_sync.py
+  - L'argument CLI est `--section` (stocké dans `args.section`), pas `args.only`
+  - 4 occurrences corrigées (lignes 322, 339-340, 515, 522-524)
+  - Audit complet du fichier test_delta_sync.py
+  - Revue expert infra des points d'audit
+- Audit findings:
+  - 🔴 Must fix (2 points) → Réévalués comme faux positifs ou risques mitigés
+  - 🟡 Consider (3 points) → 1 valide (timeout Phase 7), 2 faux positifs
+  - 💡 Suggestions (2 points) → Rejetées comme sur-engineering pour ce projet
+- Next:
+  - Relancer `python test_delta_sync.py --section Movies` pour valider le fix
+  - Committer si OK
+
+### 2026-01-31 - Ajout argument --section pour filtrage par bibliothèque
+
+- Done:
+  - Suppression de `--music-only` dans les 4 scripts principaux
+  - Ajout de `--section` (répétable) pour filtrer par nom de section Plex
+  - Validation des sections demandées avec affichage des sections ignorées
+  - Condition `should_process_music` pour skipper phase Musique si non demandée
+  - Filtrage des autres sections selon `--section`
+  - Initialisation `stats_after_scan = stats_before` pour éviter NameError
+  - Message amélioré: "Aucune section musicale dans le filtre --section ['Movies']"
+  - Harmonisation numérotation: "📚 Identification des sections..." (sans numéro)
+  - Audit et corrections des problèmes identifiés
+- Next:
+  - Tester `python test_delta_sync.py --section Movies` pour valider le filtrage
+  - Committer les changements si OK
+
+### 2026-01-30 - Rollback MountHealthMonitor après deadlock
+
+- Done:
+  - Analyse d'un blocage de 4h+ en phase 4 (après entrée PLEX_CLAIM, rien ne se passait)
+  - Identifié deadlock: `clear_pending_input()` attendait `self._lock` détenu par `_perform_health_check()` pendant 30+ secondes
+  - **Rollback**: retour à l'approche simple - input PLEX_CLAIM AVANT démarrage du monitor
+  - Ajout paramètre `initial_delay` à MountHealthMonitor (défaut 0 pour check immédiat)
+  - Méthodes `set_pending_input()`/`clear_pending_input()` conservées mais inutilisées
+- Blocked:
+  - Changements non committés - en attente de validation par test
+- Next:
+  - Tester le workflow modifié pour valider l'absence de deadlock
+  - Committer les changements si OK
+  - Relancer test complet pour valider Sonic analyse
 
 ### 2026-01-29 - Fix trois problèmes majeurs identifiés via analyse logs
 

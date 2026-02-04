@@ -191,3 +191,17 @@ Technical decisions and their context. Added via `/retro`.
 **Context**: Les logs rclone sont essentiels pour diagnostiquer les problèmes de montage S3 (déconnexions, timeouts, erreurs I/O). Sans ces logs dans l'export, le diagnostic post-mortem est incomplet.
 **Alternatives considered**: Export séparé de rclone.log (deux archives à gérer), copie manuelle (oubli fréquent).
 **Date**: 2026-01-29
+
+### User input before background monitoring threads
+
+**Decision**: Toujours demander les inputs utilisateur (PLEX_CLAIM) AVANT de démarrer les threads de monitoring en arrière-plan.
+**Context**: Plusieurs tentatives d'amélioration ont échoué: (1) monitor avant input → messages cachant le prompt, (2) pending_input reminder → deadlock car le lock est détenu pendant les health checks longs. L'approche simple "input → monitor → action" évite tous ces problèmes.
+**Alternatives considered**: Monitor avec initial_delay (PLEX_CLAIM peut expirer pendant le délai), pending_input avec lock plus granulaire (complexité accrue pour peu de bénéfice), ne pas monitorer pendant le prompt (montage peut mourir sans surveillance, mais l'utilisateur est présent).
+**Date**: 2026-01-30
+
+### --section argument for library filtering (replaces --music-only)
+
+**Decision**: Remplacer `--music-only` par `--section SECTION` (répétable) pour filtrer les bibliothèques Plex à traiter.
+**Context**: Le test local avec Mega S3 échouait à cause de timeouts I/O sur la bibliothèque Music (456k pistes). Besoin de tester sur une section plus légère (Movies: 315 items). L'argument `--section` permet un filtrage flexible par nom de section, plus naturel que par type (l'utilisateur voit les noms dans l'UI Plex).
+**Alternatives considered**: Filtrage par type de section (moins intuitif - `artist` vs `Music`), `--exclude` pour exclure des sections (logique inversée moins claire), garder `--music-only` + ajouter `--skip-music` (prolifération d'arguments).
+**Date**: 2026-01-31

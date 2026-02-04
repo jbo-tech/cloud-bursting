@@ -184,6 +184,7 @@ nohup rclone mount {remote_name}:{rclone_remote} {mount_point} \\
   --attr-timeout {config['attr_timeout']} \\
   --poll-interval 1m \\
   --s3-no-head \\
+  --no-checksum \\
   --allow-other \\
   --uid 1000 \\
   --gid 1000 \\
@@ -247,6 +248,7 @@ rclone mount {remote_name}:{rclone_remote} {mount_point} \\
     --attr-timeout {config['attr_timeout']} \\
     --poll-interval 1m \\
     --s3-no-head \\
+    --no-checksum \\
     --allow-other \\
     --uid 1000 \\
     --gid 1000 \\
@@ -1326,8 +1328,8 @@ def remount_s3_if_needed(ip, rclone_remote, profile='lite', mount_point='/mnt/s3
     from common.mount_monitor import MountHealthMonitor
     global_lock = MountHealthMonitor.get_global_lock()
 
-    # Vérification initiale
-    health = verify_rclone_mount_healthy(ip, mount_point)
+    # Vérification initiale (version simple pour éviter blocage sur FUSE mort)
+    health = verify_rclone_mount_healthy_simple(ip, mount_point)
     if health['healthy']:
         return True
 
@@ -1341,8 +1343,8 @@ def remount_s3_if_needed(ip, rclone_remote, profile='lite', mount_point='/mnt/s3
             # Attendre que le MountMonitor finisse son remontage
             global_lock.acquire(blocking=True)
             global_lock.release()
-            # Re-vérifier après l'attente
-            health = verify_rclone_mount_healthy(ip, mount_point)
+            # Re-vérifier après l'attente (version simple)
+            health = verify_rclone_mount_healthy_simple(ip, mount_point)
             if health['healthy']:
                 print(f"✅ Montage restauré par MountMonitor")
                 return True
@@ -1422,7 +1424,8 @@ def ensure_mount_healthy(ip, rclone_remote, profile, mount_point, cache_dir, log
         bool: True si le montage est fonctionnel, False si échec
     """
     print(f"   🔍 Vérification du montage S3...", end=" ", flush=True)
-    health = verify_rclone_mount_healthy(ip, mount_point)
+    # Version simple (ls avec timeout) pour éviter les blocages sur FUSE mort
+    health = verify_rclone_mount_healthy_simple(ip, mount_point)
 
     if health['healthy']:
         print(f"✅ ({health['response_time']:.1f}s)")

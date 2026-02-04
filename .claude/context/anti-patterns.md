@@ -196,6 +196,20 @@ PLEX_SECTION_TYPES = {
 }
 ```
 
+### Holding lock during long-running operations (deadlock)
+
+**Problem**: Script bloqué indéfiniment après entrée PLEX_CLAIM. Aucun message, aucune progression pendant 4+ heures.
+**Cause**: `_perform_health_check()` dans MountHealthMonitor détient `self._lock` pendant 30+ secondes (vérification montage + remontage éventuel). `clear_pending_input()` appelé depuis le thread principal tente d'acquérir le même lock et reste bloqué.
+**Solution**: Ne jamais détenir un lock pendant des opérations I/O longues. Mieux: éviter le pattern où le thread principal interagit avec le thread monitor. Solution adoptée: input AVANT démarrage du monitor.
+**Date**: 2026-01-30
+
+### Monitor starting before user input (UX + timing issues)
+
+**Problem**: Messages du MountHealthMonitor s'affichent pendant que l'utilisateur attend le prompt PLEX_CLAIM, créant confusion.
+**Cause**: Le monitor démarre avant l'input(), le premier health check s'exécute immédiatement, et les messages (stdout) apparaissent avant ou après le prompt, masquant l'attente d'input.
+**Solution**: Toujours demander les inputs utilisateur AVANT de démarrer les threads de monitoring. L'input interactif doit être isolé de tout background processing.
+**Date**: 2026-01-30
+
 ## Reference: Timeout Formulas
 
 ```python
@@ -207,3 +221,17 @@ temps_stall = stall_threshold × check_interval
 # local_delta    : 10 × 60s  = 10 min
 # cloud_intensive: 30 × 120s = 60 min (1h)
 ```
+
+### Uninitialized variable in conditional block
+
+**Problem**: `NameError: name 'stats_after_scan' is not defined` si la phase Music est skippée via `--section Movies`.
+**Cause**: `stats_after_scan` était assignée uniquement dans le bloc `if should_process_music:`. Si la condition est False, la variable n'existe pas mais est utilisée plus tard.
+**Solution**: Initialiser la variable AVANT le bloc conditionnel: `stats_after_scan = stats_before`. Toujours initialiser les variables qui seront utilisées hors du bloc où elles sont potentiellement assignées.
+**Date**: 2026-01-31
+
+### CLI argument name mismatch (args.X vs --Y)
+
+**Problem**: `AttributeError: 'Namespace' object has no attribute 'only'` - le script crashe à l'accès d'un attribut inexistant.
+**Cause**: L'argument CLI est défini comme `--section` (stocké dans `args.section`) mais le code utilise `args.only` (copie d'un autre script ou refactoring incomplet).
+**Solution**: Vérifier que chaque `args.xxx` correspond à un `add_argument('--xxx')`. Après renommage d'arguments, rechercher toutes les occurrences de l'ancien nom dans le fichier.
+**Date**: 2026-01-31

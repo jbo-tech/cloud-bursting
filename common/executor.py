@@ -11,16 +11,17 @@ import tempfile
 # FONCTIONS PRIVÉES (implémentations spécifiques)
 # ============================================================================
 
-def _execute_local(command, check=True, capture_output=False, text=True):
+def _execute_local(command, check=True, capture_output=False, text=True, timeout=None):
     """Exécution locale via bash"""
     return subprocess.run(
         ["bash", "-c", command],
         check=check,
         capture_output=capture_output,
-        text=text
+        text=text,
+        timeout=timeout
     )
 
-def _execute_remote(ip, command, check=True, capture_output=False, text=True):
+def _execute_remote(ip, command, check=True, capture_output=False, text=True, timeout=None):
     """Exécution distante via SSH"""
     ssh_cmd = [
         "ssh",
@@ -33,14 +34,15 @@ def _execute_remote(ip, command, check=True, capture_output=False, text=True):
         ssh_cmd,
         check=check,
         capture_output=capture_output,
-        text=text
+        text=text,
+        timeout=timeout
     )
 
 # ============================================================================
 # API PUBLIQUE
 # ============================================================================
 
-def execute_command(ip, command, check=True, capture_output=False, text=True, verbose=False):
+def execute_command(ip, command, check=True, capture_output=False, text=True, verbose=False, timeout=None):
     """
     Exécute une commande selon le contexte.
 
@@ -50,6 +52,7 @@ def execute_command(ip, command, check=True, capture_output=False, text=True, ve
         check: Lever une exception si erreur
         capture_output: Capturer stdout/stderr
         text: Mode texte (vs binaire)
+        timeout: Timeout en secondes (None = pas de timeout)
 
     Returns:
         subprocess.CompletedProcess
@@ -59,9 +62,9 @@ def execute_command(ip, command, check=True, capture_output=False, text=True, ve
         print(f"🔧 {prefix} {command[:80]}...")
 
     if ip == 'localhost':
-        return _execute_local(command, check, capture_output, text)
+        return _execute_local(command, check, capture_output, text, timeout)
     else:
-        return _execute_remote(ip, command, check, capture_output, text)
+        return _execute_remote(ip, command, check, capture_output, text, timeout)
 
 
 def execute_script(ip, script_content, remote_path='/tmp/exec_script.sh'):
