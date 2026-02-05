@@ -205,3 +205,45 @@ Technical decisions and their context. Added via `/retro`.
 **Context**: Le test local avec Mega S3 échouait à cause de timeouts I/O sur la bibliothèque Music (456k pistes). Besoin de tester sur une section plus légère (Movies: 315 items). L'argument `--section` permet un filtrage flexible par nom de section, plus naturel que par type (l'utilisateur voit les noms dans l'UI Plex).
 **Alternatives considered**: Filtrage par type de section (moins intuitif - `artist` vs `Music`), `--exclude` pour exclure des sections (logique inversée moins claire), garder `--music-only` + ajouter `--skip-music` (prolifération d'arguments).
 **Date**: 2026-01-31
+
+### Lock acquisition with timeout in cleanup methods
+
+**Decision**: Dans les méthodes de cleanup (stop(), finally blocks), acquérir les locks avec timeout plutôt que bloquer indéfiniment.
+**Context**: Un deadlock a été identifié dans MountHealthMonitor.stop() : le thread principal appelait _print_stats() qui attendait self._lock, détenu par le thread de health check. Avec KeyboardInterrupt, cette situation est fréquente.
+**Alternatives considered**: Lock-free design (complexité accrue), ne pas afficher de stats dans stop() (perte d'information), timeout infini avec message (ne résout pas le blocage).
+**Date**: 2026-02-04
+
+### SQLite integrity validation before Plex startup
+
+**Decision**: Exécuter `PRAGMA integrity_check;` sur la DB injectée avant de démarrer le conteneur Plex.
+**Context**: Une archive DB corrompue a causé une boucle de redémarrage Plex (crash avec "database disk image is malformed"). L'erreur n'était visible que dans les logs Docker. Valider l'intégrité dès l'injection permet d'échouer immédiatement avec un message clair.
+**Alternatives considered**: Vérifier uniquement l'existence du fichier (insuffisant), parser les logs Docker pour détecter l'erreur (réactif plutôt que préventif), faire confiance à l'archive source (risque de corruption pendant transfert).
+**Date**: 2026-02-04
+
+### Simple query instead of PRAGMA integrity_check for Plex DB
+
+**Decision**: Remplacer `PRAGMA integrity_check` par `SELECT COUNT(*) FROM library_sections` pour valider la DB Plex.
+**Context**: Plex utilise des tables FTS avec tokenizers personnalisés. Le sqlite3 système ne les supporte pas et PRAGMA échoue avec "unknown tokenizer: collating" sur une DB pourtant valide.
+**Alternatives considered**: Installer une version sqlite3 avec les extensions Plex (complexe, non standard), ignorer les erreurs FTS (risque de faux négatifs), ne pas vérifier l'intégrité (risque de corruption non détectée).
+**Date**: 2026-02-05
+
+### Path remapping via direct SQL modification
+
+**Decision**: Remapper les chemins de bibliothèques en modifiant directement les tables `section_locations` et `media_parts` dans la DB Plex.
+**Context**: Après migration de structure S3 (ex: `TVShows` → `TV`), les chemins dans la DB ne correspondent plus aux chemins réels. Plex ne peut pas trouver les fichiers et le scan retourne 0 éléments.
+**Alternatives considered**: Ajouter les nouveaux chemins via API Plex (approche "double chemin" - plus complexe, garde l'historique), recréer la bibliothèque (perd tout l'historique et métadonnées).
+**Date**: 2026-02-05
+
+### Backup before DB modification with path displayed
+
+**Decision**: Créer un backup de la DB avant tout remapping, afficher le chemin du backup dans les logs.
+**Context**: La modification SQL peut échouer partiellement (erreur sur le 2e mapping après succès du 1er). Un backup permet un rollback manuel. Pas de rollback automatique - trop complexe pour peu de valeur.
+**Alternatives considered**: Rollback automatique via transaction SQL (complexité accrue), pas de backup (risque de perte de données), backup distant pour workflow cloud (ajoute de la complexité pour un cas rare).
+**Date**: 2026-02-05
+
+### External JSON file for path mappings
+
+**Decision**: Utiliser un fichier `path_mappings.json` externe plutôt que des arguments CLI ou du code hardcodé.
+**Context**: Les mappings de chemins sont spécifiques à chaque utilisateur et peuvent évoluer. Un fichier JSON est facile à éditer, versionnable, et peut être partagé entre les scripts local et cloud.
+**Alternatives considered**: Arguments CLI `--remap old:new` (fastidieux pour plusieurs mappings), configuration dans .env (mélange de types), hardcodé (non flexible).
+**Date**: 2026-02-05

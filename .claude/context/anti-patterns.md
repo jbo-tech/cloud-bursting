@@ -235,3 +235,46 @@ temps_stall = stall_threshold × check_interval
 **Cause**: L'argument CLI est défini comme `--section` (stocké dans `args.section`) mais le code utilise `args.only` (copie d'un autre script ou refactoring incomplet).
 **Solution**: Vérifier que chaque `args.xxx` correspond à un `add_argument('--xxx')`. Après renommage d'arguments, rechercher toutes les occurrences de l'ancien nom dans le fichier.
 **Date**: 2026-01-31
+
+### Deadlock in cleanup method due to lock held by worker thread
+
+**Problem**: Script bloqué après "✅ DELTA SYNC TERMINÉ" - la méthode `stop()` de MountHealthMonitor ne retourne jamais.
+**Cause**: Dans `stop()`, appel à `_print_stats()` qui tente d'acquérir `self._lock`. Ce lock est déjà détenu par le thread de health check (`_run()` → `_perform_health_check()`). KeyboardInterrupt peut arriver pendant que le thread détient le lock.
+**Solution**: Acquérir le lock avec timeout dans les méthodes de cleanup: `if self._lock.acquire(timeout=2): ... else: print("lock timeout")`. Ne jamais bloquer indéfiniment dans finally/cleanup.
+**Date**: 2026-02-04
+
+### Silent database corruption causing Plex restart loop
+
+**Problem**: Plex démarre puis crashe en boucle avec "database disk image is malformed" dans les logs. L'erreur n'est visible que dans les logs Docker, pas dans le script.
+**Cause**: Archive DB corrompue injectée sans validation. L'extraction réussit mais la DB est inutilisable. Pas de vérification d'intégrité avant démarrage Plex.
+**Solution**: Exécuter `PRAGMA integrity_check;` après extraction de la DB. Vérifier que le résultat est exactement "ok" (lowercase). Échouer immédiatement si la DB est corrompue, avant de démarrer Plex.
+**Date**: 2026-02-04
+
+### PRAGMA integrity_check fails on Plex FTS tables
+
+**Problem**: `PRAGMA integrity_check;` échoue avec "unknown tokenizer: collating" sur une DB Plex valide.
+**Cause**: Plex utilise des tables FTS (Full-Text Search) avec tokenizers personnalisés non supportés par le sqlite3 système. Le PRAGMA essaie de vérifier ces tables et échoue.
+**Solution**: Remplacer `PRAGMA integrity_check` par une requête simple sur une table basique: `SELECT COUNT(*) FROM library_sections;`. Valide que la DB est lisible sans toucher aux tables FTS.
+**Date**: 2026-02-05
+
+### Audit false positive: SQL injection in local config files
+
+**Problem**: Audit signale une injection SQL sur des chemins insérés dans des requêtes sqlite3.
+**Cause**: Le fichier `path_mappings.json` est contrôlé par l'utilisateur local, pas exposé à des inputs externes.
+**Réalité**: FAUX POSITIF. Un attaquant ayant accès à ce fichier aurait déjà un accès complet au système. Le risque réel est proche de zéro dans ce contexte.
+**Note**: Seul cas valide: si les chemins contiennent des apostrophes (`O'Brien`), échapper avec `s.replace("'", "''")`.
+**Date**: 2026-02-05
+
+### Audit false positive: imports inside functions
+
+**Problem**: Audit critique les `import json`, `import shutil` à l'intérieur des fonctions au lieu du haut du fichier.
+**Cause**: Pattern de lazy import pour éviter de charger des modules inutilisés.
+**Réalité**: FAUX POSITIF. Python cache les imports, pas d'impact performance. Pattern acceptable et cohérent avec le reste du projet (ex: `import traceback` dans les blocs except).
+**Date**: 2026-02-05
+
+### Forgetting to update all scripts after adding a feature
+
+**Problem**: Feature ajoutée dans `test_delta_sync.py` mais pas dans `automate_delta_sync.py`. Le test local fonctionne mais la production cloud échoue.
+**Cause**: Les scripts local et cloud partagent les mêmes modules `common/` mais ont leur propre orchestration. Facile d'oublier de propager les changements.
+**Solution**: Après ajout d'une feature touchant le workflow, toujours vérifier les 4 scripts: `test_scan_local.py`, `test_delta_sync.py`, `automate_scan.py`, `automate_delta_sync.py`.
+**Date**: 2026-02-05

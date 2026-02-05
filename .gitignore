@@ -4,7 +4,10 @@
 configs/*-local.yaml
 .current_instance_id
 rclone.conf
+
+# User config (personal paths)
 plex_libraries.json
+path_mappings.json
 
 # Backups
 backups/*.tar.gz

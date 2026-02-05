@@ -97,7 +97,8 @@ cp ~/.config/rclone/rclone.conf ./
 
 ### 5. Configure Plex libraries
 ```bash
-# Edit to match your setup
+# Copy example and edit to match your setup
+cp plex_libraries.json.example plex_libraries.json
 nano plex_libraries.json
 ```
 
@@ -122,6 +123,29 @@ nano plex_libraries.json
   }
 ]
 ```
+
+### 6. Configure path mappings (optional)
+
+If you've migrated your S3 folder structure and need to remap paths in an existing Plex database:
+
+```bash
+# Copy example and edit
+cp path_mappings.json.example path_mappings.json
+nano path_mappings.json
+```
+
+**Example `path_mappings.json`:**
+```json
+{
+  "_comment": "Maps old paths to new paths after S3 folder restructuring",
+  "mappings": {
+    "/Media/TVShows": "/Media/TV",
+    "/Media/Kids/TV Shows": "/Media/Kids/TV"
+  }
+}
+```
+
+This is used by `test_delta_sync.py` and `automate_delta_sync.py` to automatically update paths in `section_locations` and `media_parts` tables when injecting an existing database.
 
 ---
 

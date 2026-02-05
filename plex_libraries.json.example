@@ -1,0 +1,34 @@
+[
+    {
+        "title": "Music",
+        "type": "artist",
+        "agent": "tv.plex.agents.music",
+        "scanner": "Plex Music",
+        "language": "en-US",
+        "paths": ["/Media/Music"]
+    },
+    {
+        "title": "TV Shows",
+        "type": "show",
+        "agent": "tv.plex.agents.series",
+        "scanner": "Plex TV Series",
+        "language": "en-US",
+        "paths": ["/Media/TV"]
+    },
+    {
+        "title": "Movies",
+        "type": "movie",
+        "agent": "tv.plex.agents.movie",
+        "scanner": "Plex Movie",
+        "language": "en-US",
+        "paths": ["/Media/Movies"]
+    },
+    {
+        "title": "Photos",
+        "type": "photo",
+        "agent": "tv.plex.agents.none",
+        "scanner": "Plex Photo Scanner",
+        "language": "en-US",
+        "paths": ["/Media/Photos"]
+    }
+]
