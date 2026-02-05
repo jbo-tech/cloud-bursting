@@ -97,7 +97,9 @@ from common.delta_sync import (
     inject_existing_db,
     get_library_stats_from_db,
     print_injection_stats,
-    verify_paths_match
+    verify_paths_match,
+    load_path_mappings,
+    remap_library_paths
 )
 
 # === CONFIGURATION ===
@@ -138,6 +140,8 @@ def main():
                         help='Sauvegarder l\'output terminal dans logs/')
     parser.add_argument('--monitoring', choices=['local', 'cloud'],
                         default='local', help='Profil monitoring: local (timeouts courts), cloud (patient)')
+    parser.add_argument('--path-mappings', type=str, metavar='FILE',
+                        help='Fichier de remapping des chemins (défaut: path_mappings.json)')
 
     args = parser.parse_args()
 
@@ -244,8 +248,34 @@ def main():
             print("\n⚠️  ATTENTION: Certains chemins ne correspondent pas!")
             for suggestion in path_check['suggestions']:
                 print(f"   • {suggestion}")
-            print("")
-            print("   Continuons quand même - certaines bibliothèques fonctionneront.")
+
+            # Charger les mappings (si fichier existe et a des entrées)
+            mappings_config = load_path_mappings(args.path_mappings)
+
+            if mappings_config['mappings']:
+                print(f"\n   📂 Fichier de mappings: {mappings_config['file']}")
+
+                # Tenter le remapping automatique
+                remap_result = remap_library_paths(
+                    ip,
+                    str(PLEX_CONFIG),
+                    str(MOUNT_DIR),
+                    mappings_config['mappings'],
+                    backup_dir=str(TEST_DIR)
+                )
+
+                if remap_result['sections_remapped'] > 0:
+                    # Re-vérifier après remapping
+                    path_check = verify_paths_match(ip, str(PLEX_CONFIG), str(MOUNT_DIR))
+                    if path_check['match']:
+                        print("\n   ✅ Tous les chemins correspondent après remapping")
+                    else:
+                        print("\n   ⚠️  Certains chemins restent incompatibles")
+                elif remap_result['errors']:
+                    print("\n   ⚠️  Remapping échoué, continuons quand même")
+            else:
+                print("\n   ⏭️  Pas de fichier path_mappings.json ou aucun mapping défini")
+                print("   Continuons quand même - certaines bibliothèques fonctionneront.")
 
         # === PHASE 4: DÉMARRAGE PLEX ===
         print_phase_header(4, "DÉMARRAGE PLEX")

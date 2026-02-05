@@ -1,0 +1,7 @@
+{
+    "_comment": "Maps old paths to new paths after S3 folder restructuring. Used by delta_sync scripts.",
+    "mappings": {
+        "/Media/TVShows": "/Media/TV",
+        "/Media/Kids/TV Shows": "/Media/Kids/TV"
+    }
+}

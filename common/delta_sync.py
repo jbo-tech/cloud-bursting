@@ -74,23 +74,20 @@ def inject_existing_db(ip, archive_path, plex_config_path, container='plex'):
         print(f"   ❌ DB non trouvée après extraction")
         return False
 
-    # 5b. Vérifier l'intégrité de la DB SQLite
+    # 5b. Vérifier que la DB est lisible (évite PRAGMA integrity_check qui
+    # échoue sur les tables FTS avec tokenizers personnalisés de Plex)
     print(f"   🔍 Vérification de l'intégrité de la DB...")
-    integrity_cmd = f"sqlite3 '{db_file}' 'PRAGMA integrity_check;'"
+    # Requête simple sur une table basique pour valider que la DB est lisible
+    integrity_cmd = f"sqlite3 '{db_file}' 'SELECT COUNT(*) FROM library_sections;'"
     integrity_result = execute_command(ip, integrity_cmd, capture_output=True, check=False)
 
     if integrity_result.returncode != 0:
         print(f"   ❌ Erreur sqlite3: {integrity_result.stderr}")
-        return False
-
-    integrity_output = integrity_result.stdout.strip().lower()
-    if integrity_output != 'ok':
-        print(f"   ❌ DB corrompue: {integrity_result.stdout.strip()}")
         print(f"   💡 L'archive source est probablement endommagée.")
         print(f"   💡 Regénérez l'archive avec: ./export_zimaboard_db.sh")
         return False
 
-    print(f"   ✅ Intégrité DB validée")
+    print(f"   ✅ DB lisible ({integrity_result.stdout.strip()} bibliothèques)")
 
     # 6. Corriger les permissions (UID 1000 = plex dans le conteneur)
     print(f"   🔐 Correction des permissions...")
@@ -284,3 +281,168 @@ def verify_paths_match(ip, plex_config_path, mount_point):
         'mount_point': mount_point,
         'suggestions': suggestions
     }
+
+
+def load_path_mappings(mappings_file=None):
+    """
+    Charge les mappings de chemins depuis un fichier JSON.
+
+    Args:
+        mappings_file: Chemin vers path_mappings.json (optionnel, auto-détecté sinon)
+
+    Returns:
+        dict: {'file': str|None, 'mappings': dict} - fichier trouvé et mappings
+    """
+    import json
+
+    result = {'file': None, 'mappings': {}}
+
+    # Auto-détection si non spécifié
+    if mappings_file is None:
+        for candidate in ['path_mappings.json', '../path_mappings.json']:
+            if os.path.exists(candidate):
+                mappings_file = candidate
+                break
+
+    if mappings_file is None or not os.path.exists(mappings_file):
+        return result
+
+    try:
+        with open(mappings_file, 'r') as f:
+            config = json.load(f)
+        result['file'] = mappings_file
+        result['mappings'] = config.get('mappings', {})
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"   ⚠️  Erreur lecture {mappings_file}: {e}")
+
+    return result
+
+
+def remap_library_paths(ip, plex_config_path, mount_point, mappings, backup_dir=None):
+    """
+    Remplace les chemins dans la DB Plex selon un dictionnaire de mappings.
+
+    Modifie:
+    - section_locations.root_path (chemins racines des bibliothèques)
+    - media_parts.file (chemins absolus des fichiers médias)
+
+    Crée un backup de la DB avant modification.
+
+    Args:
+        ip: 'localhost' ou IP remote
+        plex_config_path: Chemin du volume config Plex
+        mount_point: Point de montage S3 actuel (pour vérifier les nouveaux chemins)
+        mappings: dict {ancien_chemin: nouveau_chemin}
+        backup_dir: Répertoire pour le backup (défaut: ./tmp)
+
+    Returns:
+        dict: {'sections_remapped': int, 'files_remapped': int, 'skipped': int, 'errors': list}
+    """
+    import shutil
+    from datetime import datetime
+
+    db_path = f"{plex_config_path}/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+
+    result = {'sections_remapped': 0, 'files_remapped': 0, 'skipped': 0, 'errors': []}
+
+    if not mappings:
+        return result
+
+    print(f"\n🔄 Remapping des chemins ({len(mappings)} mappings)...")
+
+    # 1. Backup de la DB avant modification
+    if backup_dir is None:
+        backup_dir = './tmp'
+
+    backup_name = f"plex_db_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+    backup_path = f"{backup_dir}/{backup_name}"
+
+    print(f"   💾 Backup de la DB → {backup_path}")
+
+    if ip == 'localhost':
+        try:
+            shutil.copy2(db_path, backup_path)
+        except IOError as e:
+            error_msg = f"Échec backup: {e}"
+            print(f"   ❌ {error_msg}")
+            result['errors'].append(error_msg)
+            return result
+    else:
+        # Remote: copier via SSH
+        cp_result = execute_command(ip, f"cp '{db_path}' '/tmp/{backup_name}'", capture_output=True, check=False)
+        if cp_result.returncode != 0:
+            error_msg = f"Échec backup remote: {cp_result.stderr}"
+            print(f"   ❌ {error_msg}")
+            result['errors'].append(error_msg)
+            return result
+
+    # 2. Appliquer les remappings
+    for old_path, new_path in mappings.items():
+        print(f"\n   📂 {old_path} → {new_path}")
+
+        # 2a. Vérifier si l'ancien chemin est dans section_locations
+        check_query = f"SELECT COUNT(*) FROM section_locations WHERE root_path = '{old_path}';"
+        check_result = execute_command(ip, f"sqlite3 '{db_path}' \"{check_query}\"", capture_output=True, check=False)
+
+        sections_count = int(check_result.stdout.strip()) if check_result.returncode == 0 and check_result.stdout.strip().isdigit() else 0
+
+        if sections_count == 0:
+            print(f"      ⏭️  Aucune section avec ce chemin")
+            result['skipped'] += 1
+            continue
+
+        # 2b. Vérifier que le nouveau chemin existe sur le montage
+        relative = new_path.replace('/media/', '').replace('/Media/', '')
+        check_path = f"{mount_point}/{relative}"
+
+        check_cmd = f"test -d '{check_path}' && echo 'exists' || echo 'missing'"
+        path_result = execute_command(ip, check_cmd, capture_output=True, check=False)
+
+        if 'missing' in path_result.stdout:
+            error_msg = f"Nouveau chemin inexistant: {check_path}"
+            print(f"      ❌ {error_msg}")
+            result['errors'].append(f"{old_path}: {error_msg}")
+            continue
+
+        # 2c. Compter les fichiers à remapper dans media_parts
+        count_query = f"SELECT COUNT(*) FROM media_parts WHERE file LIKE '{old_path}%';"
+        count_result = execute_command(ip, f"sqlite3 '{db_path}' \"{count_query}\"", capture_output=True, check=False)
+        files_count = int(count_result.stdout.strip()) if count_result.returncode == 0 and count_result.stdout.strip().isdigit() else 0
+
+        # 2d. Remapper section_locations
+        update_sections = f"UPDATE section_locations SET root_path = '{new_path}' WHERE root_path = '{old_path}';"
+        sections_result = execute_command(ip, f"sqlite3 '{db_path}' \"{update_sections}\"", capture_output=True, check=False)
+
+        if sections_result.returncode != 0:
+            error_msg = f"Erreur SQL section_locations: {sections_result.stderr}"
+            print(f"      ❌ {error_msg}")
+            result['errors'].append(f"{old_path}: {error_msg}")
+            continue
+
+        print(f"      ✅ section_locations: {sections_count} section(s)")
+        result['sections_remapped'] += sections_count
+
+        # 2e. Remapper media_parts (REPLACE pour les chemins de fichiers)
+        if files_count > 0:
+            update_files = f"UPDATE media_parts SET file = REPLACE(file, '{old_path}', '{new_path}') WHERE file LIKE '{old_path}%';"
+            files_result = execute_command(ip, f"sqlite3 '{db_path}' \"{update_files}\"", capture_output=True, check=False)
+
+            if files_result.returncode != 0:
+                error_msg = f"Erreur SQL media_parts: {files_result.stderr}"
+                print(f"      ⚠️  {error_msg}")
+                result['errors'].append(f"{old_path}: {error_msg}")
+            else:
+                print(f"      ✅ media_parts: {files_count} fichier(s)")
+                result['files_remapped'] += files_count
+
+    # 3. Résumé
+    print(f"\n   📊 Remapping terminé:")
+    print(f"      Sections: {result['sections_remapped']}")
+    print(f"      Fichiers: {result['files_remapped']}")
+    if result['skipped'] > 0:
+        print(f"      Ignorés: {result['skipped']}")
+    if result['errors']:
+        print(f"      ⚠️  Erreurs: {len(result['errors'])}")
+        print(f"      💾 Backup disponible: {backup_path}")
+
+    return result
