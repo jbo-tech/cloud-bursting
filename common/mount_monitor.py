@@ -6,7 +6,6 @@ Ce module fournit un thread daemon qui surveille la santé du montage S3 via rcl
 et tente un remontage automatique en cas de défaillance détectée.
 """
 import threading
-import time
 from datetime import datetime
 from .plex_setup import verify_rclone_mount_healthy, remount_s3_if_needed
 
@@ -75,6 +74,7 @@ class MountHealthMonitor:
 
         # État interne
         self._running = False
+        self._stop_event = threading.Event()
         self._thread = None
         self._lock = threading.Lock()
         self._last_health = {'healthy': True, 'error': None, 'response_time': 0}
@@ -140,29 +140,24 @@ class MountHealthMonitor:
             return
 
         self._running = False
+        self._stop_event.set()
         self._stats['stop_time'] = datetime.now()
 
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=5)
+            # Attente suffisante pour laisser le health check en cours finir (timeout 30s + marge)
+            self._thread.join(timeout=35)
 
-        # Acquisition du lock avec timeout pour éviter le deadlock
-        # si le thread monitoring est bloqué dans un appel SSH
-        if self._lock.acquire(timeout=2):
-            try:
-                self._print_stats_internal()
-            finally:
-                self._lock.release()
-        else:
-            print("   [MountMonitor] Stats indisponibles (lock timeout)")
+        # Le lock n'est plus tenu pendant les opérations longues,
+        # donc l'acquisition est quasi-instantanée
+        with self._lock:
+            self._print_stats_internal()
 
     def _monitor_loop(self):
         """Boucle principale du monitoring (exécutée dans un thread)."""
         # Délai initial pour laisser le temps au prompt input() de s'afficher
         if self.initial_delay > 0:
-            for _ in range(self.initial_delay):
-                if not self._running:
-                    return
-                time.sleep(1)
+            if self._stop_event.wait(timeout=self.initial_delay):
+                return
 
         while self._running:
             try:
@@ -170,70 +165,73 @@ class MountHealthMonitor:
             except Exception as e:
                 print(f"   [MountMonitor] Erreur: {e}")
 
-            # Attendre l'intervalle (mais vérifier _running régulièrement)
-            for _ in range(int(self.check_interval)):
-                if not self._running:
-                    break
-                time.sleep(1)
+            # Attendre l'intervalle (interrompu immédiatement par stop())
+            if self._stop_event.wait(timeout=self.check_interval):
+                break
 
     def _perform_health_check(self):
         """Effectue une vérification de santé et remonte si nécessaire."""
+        # Vérification SANS lock (opération I/O longue, timeout 30s)
+        health = verify_rclone_mount_healthy(
+            self.ip,
+            self.mount_point,
+            timeout=30
+        )
+
+        if not self._running:
+            return
+
+        # Mise à jour de l'état AVEC lock (rapide)
         with self._lock:
             self._stats['checks_total'] += 1
             self._last_check_time = datetime.now()
-
-            # Vérification du montage (test simple sans lecture fichier pour le monitoring)
-            health = verify_rclone_mount_healthy(
-                self.ip,
-                self.mount_point,
-                timeout=30
-            )
-
             self._last_health = health
 
-            if health['healthy']:
-                # Tout va bien - pas de log pour ne pas polluer
-                return
+        if health['healthy']:
+            return
 
-            # Problème détecté - essayer d'acquérir le lock global avant remontage
+        # Problème détecté
+        with self._lock:
             self._stats['checks_failed'] += 1
 
-            # Essayer d'acquérir le lock sans bloquer
-            if not self._global_remount_lock.acquire(blocking=False):
-                # Un autre thread fait déjà un remontage, on attend
-                print(f"\n   [MountMonitor] ⏳ Remontage en cours par un autre processus, attente...")
-                self._print_pending_reminder()
-                return
+        # Essayer d'acquérir le lock global sans bloquer
+        if not self._global_remount_lock.acquire(blocking=False):
+            print(f"\n   [MountMonitor] ⏳ Remontage en cours par un autre processus, attente...")
+            self._print_pending_reminder()
+            return
 
-            try:
-                print(f"\n   [MountMonitor] ⚠️  Problème détecté: {health['error']}")
-                print(f"   [MountMonitor] Tentative de remontage automatique...")
+        try:
+            print(f"\n   [MountMonitor] ⚠️  Problème détecté: {health['error']}")
+            print(f"   [MountMonitor] Tentative de remontage automatique...")
 
-                # Tentative de remontage (skip_lock=True car on a déjà le lock)
+            with self._lock:
                 self._stats['remounts_attempted'] += 1
-                success = remount_s3_if_needed(
-                    self.ip,
-                    self.rclone_remote,
-                    profile=self.profile,
-                    mount_point=self.mount_point,
-                    cache_dir=self.cache_dir,
-                    log_file=self.log_file,
-                    max_retries=self.remount_retries,
-                    skip_lock=True
-                )
 
+            # Remontage SANS self._lock (opération I/O longue)
+            success = remount_s3_if_needed(
+                self.ip,
+                self.rclone_remote,
+                profile=self.profile,
+                mount_point=self.mount_point,
+                cache_dir=self.cache_dir,
+                log_file=self.log_file,
+                max_retries=self.remount_retries,
+                skip_lock=True
+            )
+
+            with self._lock:
                 if success:
                     self._stats['remounts_successful'] += 1
-                    print(f"   [MountMonitor] ✅ Remontage réussi")
-                    # Mettre à jour l'état après remontage
                     self._last_health = {'healthy': True, 'error': None, 'response_time': 0}
-                else:
-                    print(f"   [MountMonitor] ❌ Échec du remontage")
 
-                # Rappel qu'un input est en attente (si applicable)
-                self._print_pending_reminder()
-            finally:
-                self._global_remount_lock.release()
+            if success:
+                print(f"   [MountMonitor] ✅ Remontage réussi")
+            else:
+                print(f"   [MountMonitor] ❌ Échec du remontage")
+
+            self._print_pending_reminder()
+        finally:
+            self._global_remount_lock.release()
 
     def get_health_check_fn(self):
         """
