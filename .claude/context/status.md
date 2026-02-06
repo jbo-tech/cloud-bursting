@@ -6,15 +6,15 @@ Déléguer les tâches d'indexation intensives de Plex (scan, génération de m�
 
 ## Current focus
 
-Feature Path Remapping implémentée. Permet de remapper les chemins DB après migration de structure S3 (ex: `/Media/TVShows` → `/Media/TV`).
+Validation workflow Photos terminée en local. Prêt pour test cloud.
 
 **Scripts principaux:**
 - `automate_scan.py` - Cloud scan from scratch ✅
 - `automate_delta_sync.py` - Cloud delta sync (DB existante) ✅ + path remapping
 - `test_scan_local.py` / `test_delta_sync.py` - Tests locaux ✅ + path remapping
 
-**Nouveaux fichiers:**
-- `path_mappings.json` - Configuration des remappings de chemins
+**Fichiers de configuration:**
+- `path_mappings.json` - Configuration des remappings de chemins (TV + Photos)
 
 ## Reference Database
 
@@ -23,7 +23,7 @@ Feature Path Remapping implémentée. Permet de remapper les chemins DB après m
 | Bibliothèque | Type | Items | État |
 |--------------|------|-------|------|
 | Music | artist | 456,534 pistes | Sonic 17.8% (81,035) |
-| TV Shows | show | 938 épisodes | OK |
+| TV Shows | show | 738 épisodes | OK |
 | Movies | movie | 315 films | OK |
 | A voir | movie | 32 films | OK |
 | Photos | photo | 28,338 photos | OK |
@@ -36,6 +36,46 @@ Feature Path Remapping implémentée. Permet de remapper les chemins DB après m
 ## Log
 
 <!-- Entries added by /retro, newest first -->
+
+### 2026-02-05 - Test Photos + fix MountMonitor
+
+- Done:
+  - **Test 1 Photos** (`20260205_114604`): échec complet - `/Photo` non monté dans Docker
+    - 3368 erreurs "FreeImage_Load: failed to open file /Photo/..."
+    - Cause: bibliothèque Photos avait 2 locations (`/Media/Photo` + `/Photo`) mais seul `/Media` monté
+  - **Fix**: ajout mapping `/Photo` → `/Media/Photo` dans `path_mappings.json`
+  - **Test 2 Photos** (`20260205_150723`): mapping validé, 29903 fichiers remappés, 0 erreur FreeImage
+    - Mais: 2375 erreurs rclone "connection reset by peer" (connexion résidentielle → S3 Scaleway)
+    - Analyse bloquée 4h (timeout 240min), compteur oscillant 28168↔28326
+    - Résultat: +1 photo seulement, 13 JPEG corrompus (0.05%, négligeable)
+  - **Fix MountMonitor**: refactoring `_perform_health_check()` et `stop()`
+    - `self._lock` sorti des opérations I/O longues (verify_rclone + remount)
+    - `threading.Event` pour interruption immédiate du sleep dans `_monitor_loop`
+    - `stop()` simplifié: `join(timeout=35)` + `with self._lock` (plus de "Stats indisponibles")
+    - Suppression `import time` devenu inutile
+- Findings:
+  - Le test local Photos n'est pas viable (réseau résidentiel trop lent pour 28k photos via S3)
+  - Le cloud est le bon use-case pour ce volume (lien intra-datacenter S3)
+- Next:
+  - Tester le fix MountMonitor
+  - Lancer test cloud complet (Photos + autres sections)
+
+### 2026-02-05 - Réanalyse test delta + corrections bugs
+
+- Done:
+  - Analyse logs test delta local (`20260205_041326_logs_final_all/`)
+  - **Fix 1 - os.path.exists(None)**: ajout vérification `terminal_log and` avant `os.path.exists()` dans `collect_plex_logs()` (plex_setup.py:1114)
+  - **Fix 2 - Diagnostic Sonic conditionnel**: ajout `if should_process_music:` dans le bloc diagnostic post-mortem (3 scripts)
+  - Initialisation `should_process_music = True` en dehors du try/except
+  - **Réanalyse avec contenu S3**: les données sont INTACTES
+- Findings corrigés:
+  - ❌ "210 épisodes perdus" = FAUX - les DB backup et actuelle sont identiques (938 épisodes)
+  - Le "728" affiché était une lecture de stats pendant timeout rclone (donnée temporairement incorrecte)
+  - Toutes les séries S3 présentes (Columbo, Hart to Hart, Freaks and Geeks, etc.)
+  - Path remapping fonctionne correctement
+- Next:
+  - Relancer test delta pour valider les corrections
+  - Vérifier que les logs Plex et rclone sont collectés
 
 ### 2026-02-05 - Feature Path Remapping + audit faux positifs
 
@@ -84,10 +124,6 @@ Feature Path Remapping implémentée. Permet de remapper les chemins DB après m
   - 4 occurrences corrigées (lignes 322, 339-340, 515, 522-524)
   - Audit complet du fichier test_delta_sync.py
   - Revue expert infra des points d'audit
-- Audit findings:
-  - 🔴 Must fix (2 points) → Réévalués comme faux positifs ou risques mitigés
-  - 🟡 Consider (3 points) → 1 valide (timeout Phase 7), 2 faux positifs
-  - 💡 Suggestions (2 points) → Rejetées comme sur-engineering pour ce projet
 - Next:
   - Relancer `python test_delta_sync.py --section Movies` pour valider le fix
   - Committer si OK
@@ -116,8 +152,6 @@ Feature Path Remapping implémentée. Permet de remapper les chemins DB après m
   - **Rollback**: retour à l'approche simple - input PLEX_CLAIM AVANT démarrage du monitor
   - Ajout paramètre `initial_delay` à MountHealthMonitor (défaut 0 pour check immédiat)
   - Méthodes `set_pending_input()`/`clear_pending_input()` conservées mais inutilisées
-- Blocked:
-  - Changements non committés - en attente de validation par test
 - Next:
   - Tester le workflow modifié pour valider l'absence de deadlock
   - Committer les changements si OK

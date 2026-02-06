@@ -247,3 +247,10 @@ Technical decisions and their context. Added via `/retro`.
 **Context**: Les mappings de chemins sont spécifiques à chaque utilisateur et peuvent évoluer. Un fichier JSON est facile à éditer, versionnable, et peut être partagé entre les scripts local et cloud.
 **Alternatives considered**: Arguments CLI `--remap old:new` (fastidieux pour plusieurs mappings), configuration dans .env (mélange de types), hardcodé (non flexible).
 **Date**: 2026-02-05
+
+### MountMonitor: lock only for state, not for I/O
+
+**Decision**: Restructurer `_perform_health_check()` pour que `self._lock` ne protège que les mises à jour d'état (dict, compteurs), jamais les opérations I/O longues (verify_rclone, remount).
+**Context**: Le lock était tenu pendant 30+ secondes (health check timeout), empêchant `stop()` d'acquérir le lock pour afficher les stats. Résultat: "Stats indisponibles" et arrêt lent du script. Avec `threading.Event` pour le sleep, le shutdown est quasi-instantané.
+**Alternatives considered**: Augmenter le timeout d'acquisition (ne résout pas le fond), lock-free avec atomics (complexité inutile en Python), ne pas afficher les stats au shutdown (perte d'information).
+**Date**: 2026-02-05

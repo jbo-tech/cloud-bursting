@@ -278,3 +278,38 @@ temps_stall = stall_threshold × check_interval
 **Cause**: Les scripts local et cloud partagent les mêmes modules `common/` mais ont leur propre orchestration. Facile d'oublier de propager les changements.
 **Solution**: Après ajout d'une feature touchant le workflow, toujours vérifier les 4 scripts: `test_scan_local.py`, `test_delta_sync.py`, `automate_scan.py`, `automate_delta_sync.py`.
 **Date**: 2026-02-05
+
+### os.path.exists(None) crashes with cryptic error
+
+**Problem**: `collect_plex_logs()` crashe avec "stat: path should be string, bytes, os.PathLike or integer, not NoneType".
+**Cause**: `terminal_log=None` passé par défaut, puis `os.path.exists(terminal_log)` appelé sans vérifier que la variable n'est pas None.
+**Solution**: Toujours vérifier `if variable and os.path.exists(variable)` pour les chemins optionnels. Pattern: `if terminal_log and os.path.exists(terminal_log)`.
+**Date**: 2026-02-05
+
+### Stats reading during rclone timeout gives wrong values
+
+**Problem**: Le récapitulatif affiche "728 épisodes (+-210)" alors que la DB contient réellement 938 épisodes.
+**Cause**: La lecture des stats via sqlite3 a été effectuée pendant un timeout rclone (montage bloqué). La requête a retourné une valeur partielle ou incorrecte.
+**Solution**: Vérifier l'état du montage rclone avant de lire les stats. Les stats finales doivent être lues après stabilisation du montage, pas pendant une période de timeout/remontage.
+**Date**: 2026-02-05
+
+### Diagnostic Sonic displayed even when Music not selected
+
+**Problem**: Le diagnostic post-mortem affiche "🎹 DIAGNOSTIC SONIC" même quand `--section TV Shows` (pas de musique).
+**Cause**: Le bloc diagnostic Sonic n'était pas conditionné par `should_process_music`.
+**Solution**: Conditionner avec `if should_process_music:` et initialiser `should_process_music = True` en dehors du try/except pour qu'elle soit accessible dans finally.
+**Date**: 2026-02-05
+
+### Holding lock during long I/O operations (MountMonitor v2)
+
+**Problem**: `stop()` affiche "Stats indisponibles (lock timeout)" au lieu des statistiques. Le script met 7+ secondes à s'arrêter.
+**Cause**: `_perform_health_check()` détenait `self._lock` pendant toute la durée du health check (30s) + remontage potentiel. `stop()` ne pouvait pas acquérir le lock (join 5s + acquire 2s < health check 30s).
+**Solution**: Séparer lock et I/O : les opérations longues (verify_rclone, remount) s'exécutent SANS lock. Le lock n'est acquis que pour les mises à jour d'état (microsecondes). Utiliser `threading.Event` pour interrompre le sleep immédiatement.
+**Date**: 2026-02-05
+
+### Plex library with multiple locations pointing to different mount paths
+
+**Problem**: Bibliothèque Photos a 2 locations (`/Media/Photo` + `/Photo`), mais le Docker ne monte que `/Media`. Toutes les photos sous `/Photo` échouent avec "FreeImage_Load: failed to open file".
+**Cause**: Configuration Plex historique avec un chemin local (`/Photo`) en plus du chemin S3 (`/Media/Photo`). Le chemin local n'est pas monté dans le conteneur cloud.
+**Solution**: Ajouter un mapping dans `path_mappings.json` pour consolider les chemins vers S3 (`/Photo` → `/Media/Photo`). Vérifier systématiquement que TOUS les chemins de la DB sont accessibles via le montage Docker.
+**Date**: 2026-02-05
