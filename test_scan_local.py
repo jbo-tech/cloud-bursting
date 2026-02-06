@@ -126,6 +126,7 @@ def main():
     # === VARIABLES GLOBALES POUR FINALLY ===
     tee_logger = None
     plex_logs_archive = None
+    should_process_music = True  # Par défaut, sera mis à jour en phase 5
     RUN_TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # === TERMINAL LOGGING ===
@@ -583,18 +584,19 @@ def main():
         else:
             print("✅ Pas de kill mémoire (OOM)")
 
-        # Diagnostic Sonic
-        print("\n🎹 DIAGNOSTIC SONIC:")
-        db_path = "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+        # Diagnostic Sonic (seulement si musique sélectionnée)
+        if should_process_music:
+            print("\n🎹 DIAGNOSTIC SONIC:")
+            db_path = "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
 
-        sonic_count_cmd = f'''docker exec plex sqlite3 "{db_path}" "
-            SELECT
-                (SELECT COUNT(*) FROM media_item_settings WHERE loudness != 0) as loudness_count,
-                (SELECT COUNT(*) FROM media_parts WHERE extra_data LIKE '%hasSonicAnalysis%1%') as sonic_flag_count
-        " 2>/dev/null || echo "DB inaccessible"'''
-        sonic_result = execute_command(ip, sonic_count_cmd, capture_output=True, check=False)
-        print(f"   Comptage Sonic (loudness vs extra_data):")
-        print(f"   {sonic_result.stdout.strip()}")
+            sonic_count_cmd = f'''docker exec plex sqlite3 "{db_path}" "
+                SELECT
+                    (SELECT COUNT(*) FROM media_item_settings WHERE loudness != 0) as loudness_count,
+                    (SELECT COUNT(*) FROM media_parts WHERE extra_data LIKE '%hasSonicAnalysis%1%') as sonic_flag_count
+            " 2>/dev/null || echo "DB inaccessible"'''
+            sonic_result = execute_command(ip, sonic_count_cmd, capture_output=True, check=False)
+            print(f"   Comptage Sonic (loudness vs extra_data):")
+            print(f"   {sonic_result.stdout.strip()}")
 
         # Afficher les dernières logs système du conteneur
         print("\n📋 Dernières logs Docker:")

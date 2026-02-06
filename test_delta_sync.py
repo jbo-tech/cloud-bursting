@@ -148,6 +148,7 @@ def main():
     # === VARIABLES GLOBALES POUR FINALLY ===
     tee_logger = None
     plex_logs_archive = None
+    should_process_music = True  # Par défaut, sera mis à jour en phase 5
     RUN_TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # === TERMINAL LOGGING ===
@@ -658,38 +659,39 @@ def main():
         else:
             print("✅ Pas de kill mémoire (OOM)")
 
-        # === DIAGNOSTIC SONIC ===
-        print("\n🎹 DIAGNOSTIC SONIC:")
-        db_path = "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+        # === DIAGNOSTIC SONIC (seulement si musique sélectionnée) ===
+        if should_process_music:
+            print("\n🎹 DIAGNOSTIC SONIC:")
+            db_path = "/config/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
 
-        # 1. Comparer les méthodes de comptage Sonic
-        sonic_count_cmd = f'''docker exec plex sqlite3 "{db_path}" "
-            SELECT
-                (SELECT COUNT(*) FROM media_item_settings WHERE loudness != 0) as loudness_count,
-                (SELECT COUNT(*) FROM media_parts WHERE extra_data LIKE '%hasSonicAnalysis%1%') as sonic_flag_count
-        " 2>/dev/null || echo "DB inaccessible"'''
-        sonic_result = execute_command(ip, sonic_count_cmd, capture_output=True, check=False)
-        print(f"   Comptage Sonic (loudness vs extra_data):")
-        print(f"   {sonic_result.stdout.strip()}")
+            # 1. Comparer les méthodes de comptage Sonic
+            sonic_count_cmd = f'''docker exec plex sqlite3 "{db_path}" "
+                SELECT
+                    (SELECT COUNT(*) FROM media_item_settings WHERE loudness != 0) as loudness_count,
+                    (SELECT COUNT(*) FROM media_parts WHERE extra_data LIKE '%hasSonicAnalysis%1%') as sonic_flag_count
+            " 2>/dev/null || echo "DB inaccessible"'''
+            sonic_result = execute_command(ip, sonic_count_cmd, capture_output=True, check=False)
+            print(f"   Comptage Sonic (loudness vs extra_data):")
+            print(f"   {sonic_result.stdout.strip()}")
 
-        # 2. Logs Sonic spécifiques
-        print("\n   Logs Sonic (dernières entrées):")
-        sonic_logs_cmd = '''docker exec plex sh -c "grep -i 'sonic\\|fingerprint\\|audio.analysis\\|chromaprint' '/config/Library/Application Support/Plex Media Server/Logs/Plex Media Server.log' 2>/dev/null | tail -10 || echo 'Aucun log Sonic trouvé'"'''
-        execute_command(ip, sonic_logs_cmd, check=False)
+            # 2. Logs Sonic spécifiques
+            print("\n   Logs Sonic (dernières entrées):")
+            sonic_logs_cmd = '''docker exec plex sh -c "grep -i 'sonic\\|fingerprint\\|audio.analysis\\|chromaprint' '/config/Library/Application Support/Plex Media Server/Logs/Plex Media Server.log' 2>/dev/null | tail -10 || echo 'Aucun log Sonic trouvé'"'''
+            execute_command(ip, sonic_logs_cmd, check=False)
 
-        # 3. Vérifier si le moteur Sonic/analyse est actif
-        print("\n   Processus d'analyse actifs:")
-        process_cmd = "docker exec plex ps aux 2>/dev/null | grep -iE 'sonic|scanner|transcode' | grep -v grep || echo 'Aucun processus analyse'"
-        execute_command(ip, process_cmd, check=False)
+            # 3. Vérifier si le moteur Sonic/analyse est actif
+            print("\n   Processus d'analyse actifs:")
+            process_cmd = "docker exec plex ps aux 2>/dev/null | grep -iE 'sonic|scanner|transcode' | grep -v grep || echo 'Aucun processus analyse'"
+            execute_command(ip, process_cmd, check=False)
 
-        # 4. Vérifier l'état des préférences Sonic
-        print("\n   Préférences analyse Plex:")
-        prefs_cmd = f'''docker exec plex sqlite3 "{db_path}" "
-            SELECT name, value FROM preferences
-            WHERE name LIKE '%sonic%' OR name LIKE '%loudness%' OR name LIKE '%musicAnalysis%'
-            LIMIT 10
-        " 2>/dev/null || echo "Préférences inaccessibles"'''
-        execute_command(ip, prefs_cmd, check=False)
+            # 4. Vérifier l'état des préférences Sonic
+            print("\n   Préférences analyse Plex:")
+            prefs_cmd = f'''docker exec plex sqlite3 "{db_path}" "
+                SELECT name, value FROM preferences
+                WHERE name LIKE '%sonic%' OR name LIKE '%loudness%' OR name LIKE '%musicAnalysis%'
+                LIMIT 10
+            " 2>/dev/null || echo "Préférences inaccessibles"'''
+            execute_command(ip, prefs_cmd, check=False)
 
         # Dernières logs
         print("\n📋 Dernières logs Docker:")

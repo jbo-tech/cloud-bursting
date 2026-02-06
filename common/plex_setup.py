@@ -1111,7 +1111,7 @@ def collect_plex_logs(ip, container, output_dir="logs", prefix="plex", terminal_
             os.remove(archive_path)
 
         # Supprimer le fichier terminal brut (maintenant dans l'archive)
-        if not keep_terminal_log and os.path.exists(terminal_log):
+        if not keep_terminal_log and terminal_log and os.path.exists(terminal_log):
             os.remove(terminal_log)
 
         size_mb = os.path.getsize(combined_archive) / (1024*1024)
