@@ -307,6 +307,13 @@ temps_stall = stall_threshold × check_interval
 **Solution**: Séparer lock et I/O : les opérations longues (verify_rclone, remount) s'exécutent SANS lock. Le lock n'est acquis que pour les mises à jour d'état (microsecondes). Utiliser `threading.Event` pour interrompre le sleep immédiatement.
 **Date**: 2026-02-05
 
+### Residential internet NAT saturation during parallel S3 access
+
+**Problem**: 2375 erreurs rclone "connection reset by peer" lors de l'analyse de 28k photos via S3 Scaleway. Analyse bloquée 4h avec compteur oscillant (28168↔28326).
+**Cause**: Les box résidentielles (Free/Orange) limitent les sessions NAT concurrentes (~4096). L'analyse parallèle de milliers de fichiers sature cette limite. Le streaming (1 fichier séquentiel) fonctionne car il n'ouvre qu'une connexion.
+**Solution**: Les workloads d'analyse massive doivent s'exécuter en cloud (même datacenter que S3). Les tests locaux ne sont viables que pour les petites bibliothèques (Movies: ~300 items). Ne pas confondre "le streaming marche" avec "l'analyse marchera".
+**Date**: 2026-02-05
+
 ### Plex library with multiple locations pointing to different mount paths
 
 **Problem**: Bibliothèque Photos a 2 locations (`/Media/Photo` + `/Photo`), mais le Docker ne monte que `/Media`. Toutes les photos sous `/Photo` échouent avec "FreeImage_Load: failed to open file".

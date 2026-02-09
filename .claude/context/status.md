@@ -6,15 +6,17 @@ Déléguer les tâches d'indexation intensives de Plex (scan, génération de m�
 
 ## Current focus
 
-Validation workflow Photos terminée en local. Prêt pour test cloud.
+Prêt pour test cloud Scaleway 3 jours. Timeouts ajustés, bugs corrigés, MountMonitor refactoré.
 
 **Scripts principaux:**
 - `automate_scan.py` - Cloud scan from scratch ✅
-- `automate_delta_sync.py` - Cloud delta sync (DB existante) ✅ + path remapping
+- `automate_delta_sync.py` - Cloud delta sync (DB existante) ✅ + path remapping + timeouts 3j
 - `test_scan_local.py` / `test_delta_sync.py` - Tests locaux ✅ + path remapping
 
 **Fichiers de configuration:**
 - `path_mappings.json` - Configuration des remappings de chemins (TV + Photos)
+
+**Décision stratégique:** Photos → Immich (Plex inadapté pour les photos)
 
 ## Reference Database
 
@@ -36,6 +38,27 @@ Validation workflow Photos terminée en local. Prêt pour test cloud.
 ## Log
 
 <!-- Entries added by /retro, newest first -->
+
+### 2026-02-05 - Timeouts 3 jours + décision Photos→Immich
+
+- Done:
+  - **Analyse architecture**: streaming (séquentiel, 1 fichier) OK sur résidentiel, analyse (parallèle, 1000s requêtes) nécessite cloud
+  - **Décision Photos → Immich**: Plex inadapté pour photos, saturation NAT résidentielle confirmée
+  - **Timeouts cloud 3 jours** pour run Sonic complet (375k pistes restantes):
+    - `cloud_intensive.absolute_timeout`: 86400 (24h) → 259200 (72h)
+    - `wait_plex_fully_ready`: 600s → 900s
+    - `wait_section_idle` musique: ajout explicit `timeout=14400` (4h)
+    - `wait_section_idle` autres sections (scan + analyze): 3600 → 14400 (4h)
+  - **MountMonitor refactoré**: I/O hors lock, threading.Event, stop() fiable
+- Findings:
+  - Streaming S3 → résidentiel = OK (débit séquentiel suffisant pour 1 utilisateur)
+  - Analyse S3 → résidentiel = KO (saturation NAT ~4096 sessions parallèles)
+  - Cloud bursting = approche validée (intra-datacenter S3)
+  - Ajouts réguliers (2-3 films/sem, 5-10 albums) gérables par delta sync cloud
+- Next:
+  - Lancer `automate_delta_sync.py` sur Scaleway (run 3 jours)
+  - Valider Sonic analysis sur 375k pistes
+  - Migrer Photos vers Immich séparément
 
 ### 2026-02-05 - Test Photos + fix MountMonitor
 

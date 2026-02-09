@@ -248,6 +248,20 @@ Technical decisions and their context. Added via `/retro`.
 **Alternatives considered**: Arguments CLI `--remap old:new` (fastidieux pour plusieurs mappings), configuration dans .env (mélange de types), hardcodé (non flexible).
 **Date**: 2026-02-05
 
+### Photos library: migrate to Immich
+
+**Decision**: Sortir les Photos de Plex et migrer vers Immich.
+**Context**: Plex est un mauvais outil photo (pas de gestion EXIF avancée, pas de reconnaissance faciale, pas de géolocalisation). De plus, les 28k photos saturent la connexion résidentielle lors de l'analyse (2375 erreurs rclone). Immich est spécialisé pour ce use-case.
+**Alternatives considered**: Garder Photos dans Plex (performances médiocres), Google Photos (cloud propriétaire, perte de contrôle), Photoprism (moins actif qu'Immich).
+**Date**: 2026-02-05
+
+### Generous timeouts for 3-day cloud run
+
+**Decision**: Augmenter tous les timeouts pour absorber un run Sonic de 3 jours: absolute_timeout 72h, wait_plex_fully_ready 900s, wait_section_idle 4h (musique et autres sections).
+**Context**: L'analyse Sonic de 375k pistes est la tâche principale restante. Durée imprévisible (jamais fait sur cette base). Mieux vaut un timeout trop généreux (coût cloud marginal) qu'un arrêt prématuré qui perd le travail.
+**Alternatives considered**: Timeout adaptatif basé sur progression (complexité accrue), relances automatiques (risque de corruption DB), timeout plus court avec checkpoints (pas de mécanisme de checkpoint Plex).
+**Date**: 2026-02-05
+
 ### MountMonitor: lock only for state, not for I/O
 
 **Decision**: Restructurer `_perform_health_check()` pour que `self._lock` ne protège que les mises à jour d'état (dict, compteurs), jamais les opérations I/O longues (verify_rclone, remount).
