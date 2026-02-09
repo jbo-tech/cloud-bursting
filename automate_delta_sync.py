@@ -341,8 +341,8 @@ Profils d'instance:
             transcode_path='/opt/plex_data/transcode'
         )
 
-        # Attente init Plex (timeout plus long en cloud avec DB injectée)
-        plex_ready = wait_plex_fully_ready(instance_ip, container='plex', timeout=600)
+        # Attente init Plex (timeout généreux en cloud avec DB injectée de 15 Go)
+        plex_ready = wait_plex_fully_ready(instance_ip, container='plex', timeout=900)
 
         # Token API (avec retry intégré)
         plex_token = get_plex_token(instance_ip, container='plex', timeout=180)
@@ -430,9 +430,10 @@ Profils d'instance:
 
                 trigger_section_scan(instance_ip, 'plex', plex_token, music_section_id, force=args.force_scan)
 
-                # Attendre que le scan soit terminé
+                # Attendre que le scan soit terminé (4h pour absorber les nouveaux items)
                 wait_section_idle(instance_ip, 'plex', plex_token, music_section_id,
-                                  section_type='artist', phase='scan', config_path='/opt/plex_data/config')
+                                  section_type='artist', phase='scan', config_path='/opt/plex_data/config',
+                                  timeout=14400)
 
                 # Analyse du delta de scan
                 print("\n📊 Analyse du delta de scan:")
@@ -550,14 +551,14 @@ Profils d'instance:
                 trigger_section_scan(instance_ip, 'plex', plex_token, info['id'], force=False)
                 wait_section_idle(instance_ip, 'plex', plex_token, info['id'],
                                   section_type=info['type'], phase='scan',
-                                  config_path='/opt/plex_data/config', timeout=3600)
+                                  config_path='/opt/plex_data/config', timeout=14400)
 
                 # Analyse de la section
                 print(f"\n   🔬 Analyse de '{section_name}' (ID: {info['id']})")
                 trigger_section_analyze(instance_ip, 'plex', plex_token, info['id'])
                 wait_section_idle(instance_ip, 'plex', plex_token, info['id'],
                                   section_type=info['type'], phase='analyze',
-                                  config_path='/opt/plex_data/config', timeout=3600)
+                                  config_path='/opt/plex_data/config', timeout=14400)
 
             print("\n✅ Scan et analyse autres sections terminés")
 

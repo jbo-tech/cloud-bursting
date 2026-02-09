@@ -37,12 +37,12 @@ MONITORING_PROFILES = {
         'description': 'Cloud scan standard'
     },
     'cloud_intensive': {
-        # Cloud avec grosse bibliothèque + Sonic
+        # Cloud avec grosse bibliothèque + Sonic (run de plusieurs jours)
         'check_interval': 120,
         'stall_threshold': 30,      # 1h sans progression = arrêt (30 × 2min)
         'cpu_idle_threshold': 5.0,  # Plus strict car Sonic utilise beaucoup de CPU
-        'absolute_timeout': 86400,  # 24h max
-        'description': 'Cloud scan intensif (grosse lib + Sonic)'
+        'absolute_timeout': 259200, # 72h max (3 jours)
+        'description': 'Cloud scan intensif (grosse lib + Sonic, 3j max)'
     },
     'metadata_refresh': {
         # Refresh metadata séparé (images, paroles, matching)
