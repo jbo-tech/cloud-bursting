@@ -1306,7 +1306,7 @@ def verify_rclone_mount_healthy(ip, mount_point='/mnt/s3-media', timeout=30):
 
 def remount_s3_if_needed(ip, rclone_remote, profile='lite', mount_point='/mnt/s3-media',
                          cache_dir=None, log_file=None, config_path=None, max_retries=3,
-                         skip_lock=False):
+                         skip_lock=False, stop_event=None):
     """
     Vérifie le montage rclone et remonte si nécessaire.
 
@@ -1320,6 +1320,7 @@ def remount_s3_if_needed(ip, rclone_remote, profile='lite', mount_point='/mnt/s3
         config_path: Chemin du fichier rclone.conf
         max_retries: Nombre max de tentatives de remontage
         skip_lock: Si True, ne pas acquérir le lock global (appelé depuis MountMonitor)
+        stop_event: threading.Event optionnel pour annuler le remontage
 
     Returns:
         bool: True si le montage est fonctionnel, False si échec après retries
@@ -1360,15 +1361,33 @@ def remount_s3_if_needed(ip, rclone_remote, profile='lite', mount_point='/mnt/s3
             else:
                 cache_dir = '/mnt/rclone-cache'
 
+        def _interrupted():
+            return stop_event is not None and stop_event.is_set()
+
+        def _sleep(seconds):
+            """Sleep interruptible par stop_event."""
+            if stop_event is not None:
+                stop_event.wait(timeout=seconds)
+            else:
+                time.sleep(seconds)
+
         for attempt in range(1, max_retries + 1):
+            if _interrupted():
+                print("   ⏹️  Remontage annulé (arrêt demandé)")
+                return False
+
             print(f"🔄 Tentative de remontage {attempt}/{max_retries}...")
 
             # Démontage forcé
             execute_command(ip, f"pkill -9 -f 'rclone mount.*{mount_point}' || true", check=False)
-            time.sleep(3)
+            _sleep(3)
             execute_command(ip, f"fusermount3 -uz {mount_point} || true", check=False)
             execute_command(ip, f"fusermount -uz {mount_point} || true", check=False)
-            time.sleep(2)
+            _sleep(2)
+
+            if _interrupted():
+                print("   ⏹️  Remontage annulé (arrêt demandé)")
+                return False
 
             # Nettoyage du cache VFS rclone (peut contenir des handles corrompus)
             print(f"   🧹 Nettoyage du cache rclone...")
@@ -1377,7 +1396,11 @@ def remount_s3_if_needed(ip, rclone_remote, profile='lite', mount_point='/mnt/s3
             # Cooldown pour laisser MEGA récupérer (augmente avec chaque tentative)
             cooldown = 10 * attempt  # 10s, 20s, 30s
             print(f"   ⏳ Cooldown {cooldown}s avant remontage...")
-            time.sleep(cooldown)
+            _sleep(cooldown)
+
+            if _interrupted():
+                print("   ⏹️  Remontage annulé (arrêt demandé)")
+                return False
 
             # Remontage
             try:
@@ -1390,7 +1413,7 @@ def remount_s3_if_needed(ip, rclone_remote, profile='lite', mount_point='/mnt/s3
             # Vérification post-remontage (test simple: ls seulement, pas de lecture fichier)
             # Le test de lecture fichier est trop strict pour MEGA qui peut être lent
             print(f"   🔍 Vérification post-remontage...")
-            time.sleep(10)  # Attendre que rclone soit vraiment prêt
+            _sleep(10)  # Attendre que rclone soit vraiment prêt
             health = verify_rclone_mount_healthy_simple(ip, mount_point, timeout=30)
             if health['healthy']:
                 print(f"   ✅ Remontage réussi (temps de réponse: {health['response_time']:.2f}s)")

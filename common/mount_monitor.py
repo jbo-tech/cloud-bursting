@@ -144,8 +144,11 @@ class MountHealthMonitor:
         self._stats['stop_time'] = datetime.now()
 
         if self._thread and self._thread.is_alive():
-            # Attente suffisante pour laisser le health check en cours finir (timeout 30s + marge)
-            self._thread.join(timeout=35)
+            # Le stop_event interrompt les sleep dans remount_s3_if_needed,
+            # donc le thread s'arrête rapidement même en plein remontage
+            self._thread.join(timeout=60)
+            if self._thread.is_alive():
+                print("   [MountMonitor] ⚠️  Thread encore actif après 60s")
 
         # Le lock n'est plus tenu pendant les opérations longues,
         # donc l'acquisition est quasi-instantanée
@@ -208,6 +211,7 @@ class MountHealthMonitor:
                 self._stats['remounts_attempted'] += 1
 
             # Remontage SANS self._lock (opération I/O longue)
+            # stop_event permet d'interrompre le remontage si stop() est appelé
             success = remount_s3_if_needed(
                 self.ip,
                 self.rclone_remote,
@@ -216,7 +220,8 @@ class MountHealthMonitor:
                 cache_dir=self.cache_dir,
                 log_file=self.log_file,
                 max_retries=self.remount_retries,
-                skip_lock=True
+                skip_lock=True,
+                stop_event=self._stop_event
             )
 
             with self._lock:

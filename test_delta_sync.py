@@ -78,7 +78,8 @@ from common.plex_setup import (
     disable_all_background_tasks,
     enable_music_analysis_only,
     enable_all_analysis,
-    collect_plex_logs
+    collect_plex_logs,
+    ensure_mount_healthy
 )
 from common.mount_monitor import MountHealthMonitor
 from common.plex_scan import (
@@ -211,6 +212,19 @@ def main():
 
         setup_local_test_env(TEST_DIR, MOUNT_DIR, PLEX_CONFIG)
         setup_rclone_config(ip)
+
+        # Pre-pull image Docker (évite 30min de téléchargement pendant le scan)
+        plex_version = env.get('PLEX_VERSION', 'latest')
+        plex_image = f"plexinc/pms-docker:{plex_version}"
+        print(f"🐳 Vérification image Docker {plex_image}...")
+        pull_result = execute_command(ip, f"docker pull {plex_image}", capture_output=True, check=False)
+        if pull_result.returncode == 0:
+            if "up to date" in pull_result.stdout.lower() or "up to date" in pull_result.stderr.lower():
+                print("   ✅ Image déjà à jour")
+            else:
+                print("   ✅ Image téléchargée")
+        else:
+            print("   ⚠️  Pull échoué, docker run tentera le téléchargement")
 
         # === PHASE 2: INJECTION DB ===
         print_phase_header(2, "INJECTION DB EXISTANTE")
@@ -394,53 +408,62 @@ def main():
             if music_section_id:
                 print(f"   Section Musique trouvée: [{music_section_id}] {music_section_name}")
 
-                # Scan avec ou sans filtre
-                if args.filter:
-                    # Scan filtré via CLI
-                    local_mount_path = MOUNT_DIR / "Music"
-                    possible_paths = [
-                        MOUNT_DIR / "Music",
-                        MOUNT_DIR / "Music-Various-Artists",
-                        MOUNT_DIR / music_section_name,
-                    ]
-
-                    for p in possible_paths:
-                        if p.exists():
-                            local_mount_path = p
-                            break
-
-                    if local_mount_path.exists():
-                        filter_prefixes = [args.filter.upper()]
-                        print(f"   📂 Scan avec filtre {filter_prefixes} dans {local_mount_path}")
-
-                        scan_section_incrementally(
-                            ip,
-                            'plex',
-                            plex_token,
-                            music_section_id,
-                            'artist',
-                            f"/Media/{local_mount_path.name}",
-                            str(local_mount_path),
-                            filter_prefixes=filter_prefixes
-                        )
-                    else:
-                        print(f"   ⚠️  Dossier local non trouvé, fallback sur API refresh")
-                        trigger_section_scan(ip, 'plex', plex_token, music_section_id, force=args.force_scan)
+                # Vérifier le montage S3 avant le scan
+                mount_ok = ensure_mount_healthy(
+                    ip, env['S3_BUCKET'], rclone_profile, str(MOUNT_DIR),
+                    str(CACHE_DIR), str(LOG_FILE), phase_name="scan Musique")
+                if not mount_ok:
+                    print("   ❌ Montage S3 défaillant, scan Musique ANNULÉ")
+                    music_section_id = None  # Empêcher Sonic aussi
+                    stats_after_scan = stats_before
                 else:
-                    # Scan global via API
-                    trigger_section_scan(ip, 'plex', plex_token, music_section_id, force=args.force_scan)
+                    # Scan avec ou sans filtre
+                    if args.filter:
+                        # Scan filtré via CLI
+                        local_mount_path = MOUNT_DIR / "Music"
+                        possible_paths = [
+                            MOUNT_DIR / "Music",
+                            MOUNT_DIR / "Music-Various-Artists",
+                            MOUNT_DIR / music_section_name,
+                        ]
 
-                # Attendre que le scan soit terminé
-                wait_section_idle(ip, 'plex', plex_token, music_section_id,
-                                  section_type='artist', phase='scan', config_path=str(PLEX_CONFIG))
+                        for p in possible_paths:
+                            if p.exists():
+                                local_mount_path = p
+                                break
 
-                # Analyse du delta de scan
-                print("\n📊 Analyse du delta de scan:")
-                stats_after_scan = get_library_stats_from_db(ip, str(PLEX_CONFIG))
-                delta_tracks = stats_after_scan['tracks'] - stats_before['tracks']
-                delta_artists = stats_after_scan['artists'] - stats_before['artists']
-                print(f"   Nouvelles pistes   : +{delta_tracks}")
-                print(f"   Nouveaux artistes  : +{delta_artists}")
+                        if local_mount_path.exists():
+                            filter_prefixes = [args.filter.upper()]
+                            print(f"   📂 Scan avec filtre {filter_prefixes} dans {local_mount_path}")
+
+                            scan_section_incrementally(
+                                ip,
+                                'plex',
+                                plex_token,
+                                music_section_id,
+                                'artist',
+                                f"/Media/{local_mount_path.name}",
+                                str(local_mount_path),
+                                filter_prefixes=filter_prefixes
+                            )
+                        else:
+                            print(f"   ⚠️  Dossier local non trouvé, fallback sur API refresh")
+                            trigger_section_scan(ip, 'plex', plex_token, music_section_id, force=args.force_scan)
+                    else:
+                        # Scan global via API
+                        trigger_section_scan(ip, 'plex', plex_token, music_section_id, force=args.force_scan)
+
+                    # Attendre que le scan soit terminé
+                    wait_section_idle(ip, 'plex', plex_token, music_section_id,
+                                      section_type='artist', phase='scan', config_path=str(PLEX_CONFIG))
+
+                    # Analyse du delta de scan
+                    print("\n📊 Analyse du delta de scan:")
+                    stats_after_scan = get_library_stats_from_db(ip, str(PLEX_CONFIG))
+                    delta_tracks = stats_after_scan['tracks'] - stats_before['tracks']
+                    delta_artists = stats_after_scan['artists'] - stats_before['artists']
+                    print(f"   Nouvelles pistes   : +{delta_tracks}")
+                    print(f"   Nouveaux artistes  : +{delta_artists}")
             else:
                 print("   ⚠️  Aucune section Musique trouvée")
                 stats_after_scan = stats_before
@@ -544,6 +567,15 @@ def main():
             print("\n7.2 Scan et analyse des sections restantes (séquentiel)...")
 
             for section_name, info in other_sections:
+                # Vérifier le montage S3 avant chaque scan
+                mount_ok = ensure_mount_healthy(
+                    ip, env['S3_BUCKET'], rclone_profile, str(MOUNT_DIR),
+                    str(CACHE_DIR), str(LOG_FILE),
+                    phase_name=f"scan {section_name}")
+                if not mount_ok:
+                    print(f"   ❌ Montage S3 défaillant, scan de '{section_name}' ANNULÉ")
+                    continue
+
                 # Étape 1: Scan de la section
                 print(f"\n   🔍 Scan de '{section_name}' (ID: {info['id']}, type: {info['type']})")
                 trigger_section_scan(ip, 'plex', plex_token, info['id'], force=False)

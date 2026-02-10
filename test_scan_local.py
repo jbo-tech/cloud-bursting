@@ -169,6 +169,18 @@ def main():
         # 4. Configuration rclone
         setup_rclone_config(ip)
 
+        # Pre-pull image Docker (évite un long téléchargement pendant le scan)
+        plex_image = f"plexinc/pms-docker:{env['PLEX_VERSION']}"
+        print(f"🐳 Vérification image Docker {plex_image}...")
+        pull_result = execute_command(ip, f"docker pull {plex_image}", capture_output=True, check=False)
+        if pull_result.returncode == 0:
+            if "up to date" in pull_result.stdout.lower() or "up to date" in pull_result.stderr.lower():
+                print("   ✅ Image déjà à jour")
+            else:
+                print("   ✅ Image téléchargée")
+        else:
+            print("   ⚠️  Pull échoué, docker run tentera le téléchargement")
+
         # 5. Montage S3
         print_phase_header(2, "MONTAGE S3")
         mount_s3(
