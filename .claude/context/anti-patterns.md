@@ -314,6 +314,28 @@ temps_stall = stall_threshold × check_interval
 **Solution**: Les workloads d'analyse massive doivent s'exécuter en cloud (même datacenter que S3). Les tests locaux ne sont viables que pour les petites bibliothèques (Movies: ~300 items). Ne pas confondre "le streaming marche" avec "l'analyse marchera".
 **Date**: 2026-02-05
 
+### Scan on degraded rclone mount deletes DB entries
+
+**Problem**: Plex scanner supprime 221/224 films de la DB. Le scan progresse (0%→99%) mais ne trouve aucun fichier. Résultat: `Films: 94 (+-221)`.
+**Cause**: Le montage rclone est en état dégradé (I/O bloqué). Le dir-cache (72h) permet de lister les répertoires, mais les fichiers sont inaccessibles. Plex interprète "répertoire listable, fichiers inaccessibles" comme "fichiers supprimés" et purge la DB.
+**Solution**: Appeler `ensure_mount_healthy()` avant chaque `trigger_section_scan()`. Si le montage est cassé, annuler le scan. Ne JAMAIS scanner sur un montage dégradé — les dégâts sont irréversibles.
+**Risque résiduel**: Le montage peut tomber PENDANT un scan (fenêtre de 60s entre les checks du MountMonitor). Pas de solution simple sans sur-ingénierie. Accepter le risque.
+**Date**: 2026-02-09
+
+### MountMonitor remount survives stop() and runs during cleanup
+
+**Problem**: Après `mount_monitor.stop()`, des messages "🔄 Tentative de remontage 1/3..." apparaissent pendant le cleanup (après suppression des dossiers de test).
+**Cause**: `remount_s3_if_needed()` prenait ~3-4 min (3 retries avec cooldowns). Le `join(timeout=35s)` expirait, le thread daemon continuait en arrière-plan pendant le cleanup.
+**Solution**: Passer un `stop_event` (threading.Event) à `remount_s3_if_needed()`. Remplacer `time.sleep()` par `stop_event.wait(timeout=)` et vérifier `stop_event.is_set()` entre chaque retry. Le thread s'arrête en quelques secondes au lieu de minutes.
+**Date**: 2026-02-09
+
+### Docker image pull during scan phase wastes 30 minutes
+
+**Problem**: 30 min d'écart entre `docker run` et le démarrage effectif de Plex. Le MountMonitor tourne pour rien, le claim token peut expirer (4 min de validité).
+**Cause**: L'image `plexinc/pms-docker:latest` n'était pas en cache. `docker run` télécharge l'image avant de démarrer le conteneur.
+**Solution**: Ajouter `docker pull` en Phase 1 (préparation), avant le montage S3 et le MountMonitor. Déjà fait dans `setup_instance.sh` pour le cloud, ajouté dans les scripts locaux.
+**Date**: 2026-02-09
+
 ### Plex library with multiple locations pointing to different mount paths
 
 **Problem**: Bibliothèque Photos a 2 locations (`/Media/Photo` + `/Photo`), mais le Docker ne monte que `/Media`. Toutes les photos sous `/Photo` échouent avec "FreeImage_Load: failed to open file".

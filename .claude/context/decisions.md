@@ -268,3 +268,17 @@ Technical decisions and their context. Added via `/retro`.
 **Context**: Le lock était tenu pendant 30+ secondes (health check timeout), empêchant `stop()` d'acquérir le lock pour afficher les stats. Résultat: "Stats indisponibles" et arrêt lent du script. Avec `threading.Event` pour le sleep, le shutdown est quasi-instantané.
 **Alternatives considered**: Augmenter le timeout d'acquisition (ne résout pas le fond), lock-free avec atomics (complexité inutile en Python), ne pas afficher les stats au shutdown (perte d'information).
 **Date**: 2026-02-05
+
+### Pre-scan mount health check + cancellable remount
+
+**Decision**: Vérifier la santé du montage S3 avant chaque scan de section (`ensure_mount_healthy()`). Rendre `remount_s3_if_needed()` annulable via `stop_event`. Pré-télécharger l'image Docker en Phase 1.
+**Context**: Un montage rclone dégradé (dir-cache OK mais I/O bloqué) a causé la suppression de 221/224 films par le scanner Plex. Le MountMonitor survivait au `stop()` car `remount_s3_if_needed()` prenait 3-4 min vs `join(timeout=35s)`.
+**Alternatives considered**: Watchdog pendant le scan pour tuer Plex si le montage tombe (complexité excessive, rend le script illisible), configuration Plex `--no-delete` (n'existe pas nativement), monitoring continu pendant le scan (surcharge pour un risque résiduel accepté).
+**Date**: 2026-02-09
+
+### Accepted residual risk: mount death during scan
+
+**Decision**: Ne PAS ajouter de protection contre la mort du montage PENDANT un scan en cours. Seule la vérification avant le scan est implémentée.
+**Context**: Entre deux checks du MountMonitor (60s), le montage peut tomber et Plex peut supprimer des items. Ajouter un watchdog ou un monitoring plus agressif complexifierait significativement les scripts pour un scénario peu fréquent. Le remède serait pire que le mal en termes de lisibilité.
+**Alternatives considered**: Watchdog qui stoppe Plex si le montage meurt (complexe, risque d'interruptions intempestives), réduire l'intervalle MountMonitor à 10s (overhead I/O), hook Plex anti-suppression (n'existe pas).
+**Date**: 2026-02-09

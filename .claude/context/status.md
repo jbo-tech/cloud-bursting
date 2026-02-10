@@ -6,15 +6,12 @@ Déléguer les tâches d'indexation intensives de Plex (scan, génération de m�
 
 ## Current focus
 
-Prêt pour test cloud Scaleway 3 jours. Timeouts ajustés, bugs corrigés, MountMonitor refactoré.
+Corrections post-test local validées. Prêt pour test cloud Scaleway 3 jours. Montage S3 protégé par healthcheck pré-scan, MountMonitor annulable, Docker pré-pull.
 
 **Scripts principaux:**
 - `automate_scan.py` - Cloud scan from scratch ✅
-- `automate_delta_sync.py` - Cloud delta sync (DB existante) ✅ + path remapping + timeouts 3j
-- `test_scan_local.py` / `test_delta_sync.py` - Tests locaux ✅ + path remapping
-
-**Fichiers de configuration:**
-- `path_mappings.json` - Configuration des remappings de chemins (TV + Photos)
+- `automate_delta_sync.py` - Cloud delta sync (DB existante) ✅ + healthcheck pré-scan
+- `test_scan_local.py` / `test_delta_sync.py` - Tests locaux ✅ + healthcheck pré-scan + docker pre-pull
 
 **Décision stratégique:** Photos → Immich (Plex inadapté pour les photos)
 
@@ -38,6 +35,32 @@ Prêt pour test cloud Scaleway 3 jours. Timeouts ajustés, bugs corrigés, Mount
 ## Log
 
 <!-- Entries added by /retro, newest first -->
+
+### 2026-02-09 - Fix montage dégradé + MountMonitor annulable + Docker pre-pull
+
+- Done:
+  - **Analyse logs test** (`20260209_221640`): montage rclone dégradé → Plex supprime 221/224 films
+    - Dir-cache 72h = répertoires listables mais fichiers I/O bloqué
+    - Scanner Plex interprète "fichiers inaccessibles" comme "fichiers supprimés"
+  - **Solution A - Healthcheck pré-scan**: `ensure_mount_healthy()` avant chaque `trigger_section_scan()`
+    - Si montage cassé: scan annulé, `music_section_id = None`, `stats_after_scan = stats_before`
+    - Implémenté dans `test_delta_sync.py` et `automate_delta_sync.py`
+  - **Solution B - Remount annulable**: `remount_s3_if_needed()` accepte `stop_event`
+    - `_interrupted()` + `_sleep()` helpers, 3 checkpoints dans la boucle de retry
+    - `mount_monitor.py`: passe `self._stop_event`, join timeout 35s → 60s
+  - **Solution C - Docker pre-pull**: `docker pull` en Phase 1 dans `test_delta_sync.py` et `test_scan_local.py`
+    - Cloud: déjà dans `setup_instance.sh:60`, pas de changement nécessaire
+  - **Documentation**: 3 anti-patterns + 2 decisions ajoutés
+  - **Décision**: risque résiduel (montage tombe PENDANT scan) accepté, pas de watchdog (sur-ingénierie)
+- Bugs corrigés pendant implémentation:
+  - Control flow cassé en Phase 6 (elif après mount check → restructuré avec if/else)
+  - Variable `rclone_profile` vs `profile` dans automate_delta_sync.py
+  - f-strings sans placeholders (ruff)
+- Next:
+  - Relancer test local `test_delta_sync.py --section Movies` pour valider les 3 fixes
+  - Lancer `automate_delta_sync.py` sur Scaleway (run 3 jours)
+  - Valider Sonic analysis sur 375k pistes
+  - Migrer Photos vers Immich séparément
 
 ### 2026-02-05 - Timeouts 3 jours + décision Photos→Immich
 
