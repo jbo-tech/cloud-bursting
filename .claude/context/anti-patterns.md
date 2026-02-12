@@ -342,3 +342,17 @@ temps_stall = stall_threshold × check_interval
 **Cause**: Configuration Plex historique avec un chemin local (`/Photo`) en plus du chemin S3 (`/Media/Photo`). Le chemin local n'est pas monté dans le conteneur cloud.
 **Solution**: Ajouter un mapping dans `path_mappings.json` pour consolider les chemins vers S3 (`/Photo` → `/Media/Photo`). Vérifier systématiquement que TOUS les chemins de la DB sont accessibles via le montage Docker.
 **Date**: 2026-02-05
+
+### MountMonitor with aggressive timeout on slow networks causes silent scan failure
+
+**Problem**: Scan de Movies retourne +0 delta alors que des fichiers ont été ajoutés. Le scan semble réussir (220/221 analysés) mais ne détecte aucun nouveau fichier. Dans un second test, la machine gèle complètement.
+**Cause**: Le healthcheck du MountMonitor utilise un timeout de 30s. Sur connexion résidentielle (latence variable, NAT), les lectures S3 dépassent régulièrement 30s → faux positif → remontage automatique → dir-cache rclone purgé → Plex ne voit que les fichiers déjà en DB, pas les nouveaux. Le remontage pendant des I/O FUSE actives peut aussi geler le système.
+**Solution**: Ne pas utiliser MountMonitor en local. Les paramètres rclone de résilience (`--timeout 120m`, `--retries 20`) suffisent. Réserver MountMonitor pour le cloud (latence S3 <1ms, timeout 30s = vrai problème).
+**Date**: 2026-02-11
+
+### MountMonitor running during export/cleanup phases
+
+**Problem**: Messages "Tentative de remontage" pendant l'export de la DB et le diagnostic post-mortem. Le monitor remonte inutilement alors que le montage S3 n'est plus nécessaire.
+**Cause**: `mount_monitor.stop()` dans le `finally` block, donc le monitor tourne pendant toute la phase Export qui ne lit que le disque local.
+**Solution**: Stopper le monitor AVANT la phase Export (`mount_monitor.stop(); mount_monitor = None`). Garder un filet de sécurité dans finally pour le cas d'exception avant l'export.
+**Date**: 2026-02-11

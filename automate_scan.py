@@ -454,6 +454,11 @@ Profils d'instance:
         else:
             print("\n⏭️  Scan ignoré (--skip-scan)")
 
+        # Arrêter le monitoring S3 (plus nécessaire pour l'export qui lit le disque local)
+        if mount_monitor is not None:
+            mount_monitor.stop()
+            mount_monitor = None
+
         # === PHASE 8: EXPORT ===
         print_phase_header(8, "EXPORT MÉTADONNÉES")
 
@@ -500,8 +505,8 @@ Profils d'instance:
         import traceback
         traceback.print_exc()
     finally:
-        # Arrêter le monitoring du montage
-        if mount_monitor:
+        # Arrêter le monitor s'il n'a pas été arrêté en phase Export
+        if mount_monitor is not None:
             mount_monitor.stop()
 
         # === DIAGNOSTIC POST-MORTEM ===

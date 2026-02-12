@@ -6,12 +6,12 @@ Déléguer les tâches d'indexation intensives de Plex (scan, génération de m�
 
 ## Current focus
 
-Corrections post-test local validées. Prêt pour test cloud Scaleway 3 jours. Montage S3 protégé par healthcheck pré-scan, MountMonitor annulable, Docker pré-pull.
+MountMonitor retiré des scripts locaux, simplifié dans les scripts cloud. Prêt pour re-test local puis test cloud Scaleway.
 
 **Scripts principaux:**
-- `automate_scan.py` - Cloud scan from scratch ✅
-- `automate_delta_sync.py` - Cloud delta sync (DB existante) ✅ + healthcheck pré-scan
-- `test_scan_local.py` / `test_delta_sync.py` - Tests locaux ✅ + healthcheck pré-scan + docker pre-pull
+- `automate_scan.py` - Cloud scan from scratch (MountMonitor, stop avant Export)
+- `automate_delta_sync.py` - Cloud delta sync (MountMonitor, stop avant Export)
+- `test_scan_local.py` / `test_delta_sync.py` - Tests locaux (sans MountMonitor, résilience rclone seule)
 
 **Décision stratégique:** Photos → Immich (Plex inadapté pour les photos)
 
@@ -35,6 +35,29 @@ Corrections post-test local validées. Prêt pour test cloud Scaleway 3 jours. M
 ## Log
 
 <!-- Entries added by /retro, newest first -->
+
+### 2026-02-11 - Retrait MountMonitor des scripts locaux + simplification cloud
+
+- Done:
+  - **Analyse de 2 tests échoués**:
+    - Test 1 (`20260210_192052`, `--section Movies`): MountMonitor 6/6 faux positifs, remontages inutiles pendant l'export, +0 delta alors que des fichiers ont été ajoutés (remontage a vidé le dir-cache rclone)
+    - Test 2 (`20260211_012555`, `--section 'TV Shows'`): bloqué en Phase 7, machine gelée (deadlock FUSE probable lors du remontage pendant I/O active)
+  - **Diagnostic root cause**: timeout 30s du healthcheck trop agressif pour connexion résidentielle → faux positifs systématiques → remontages inutiles → dir-cache purgé → scan échoue silencieusement
+  - **Retrait MountMonitor des scripts locaux** (`test_delta_sync.py`, `test_scan_local.py`):
+    - Retiré imports MountHealthMonitor et ensure_mount_healthy
+    - Retiré création/start/stop du monitor
+    - Retiré healthcheck pré-scan (ensure_mount_healthy avant chaque section)
+    - Retiré health_check_fn dans wait_sonic_complete
+    - Corrigé indentation (bloc sur-indenté après retrait du if/else)
+  - **Simplification scripts cloud** (`automate_delta_sync.py`, `automate_scan.py`):
+    - Retiré ensure_mount_healthy (MountMonitor continu suffit en cloud)
+    - Déplacé mount_monitor.stop() avant la phase Export (plus nécessaire pour lecture disque local)
+    - Gardé filet de sécurité dans finally (arrêt propre + stats en cas d'exception)
+  - **Validation infra-expert**: stop() dans finally est correct (arrête le thread, affiche stats, empêche remontages — ne déclenche jamais de remontage)
+- Next:
+  - Valider test local `test_delta_sync.py --section Movies` (en cours)
+  - Vérifier que le delta de scan détecte les nouveaux fichiers
+  - Lancer `automate_delta_sync.py` sur Scaleway
 
 ### 2026-02-09 - Fix montage dégradé + MountMonitor annulable + Docker pre-pull
 

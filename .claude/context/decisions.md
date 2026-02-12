@@ -282,3 +282,24 @@ Technical decisions and their context. Added via `/retro`.
 **Context**: Entre deux checks du MountMonitor (60s), le montage peut tomber et Plex peut supprimer des items. Ajouter un watchdog ou un monitoring plus agressif complexifierait significativement les scripts pour un scénario peu fréquent. Le remède serait pire que le mal en termes de lisibilité.
 **Alternatives considered**: Watchdog qui stoppe Plex si le montage meurt (complexe, risque d'interruptions intempestives), réduire l'intervalle MountMonitor à 10s (overhead I/O), hook Plex anti-suppression (n'existe pas).
 **Date**: 2026-02-09
+
+### MountMonitor: cloud only, not local
+
+**Decision**: Retirer MountMonitor et ensure_mount_healthy() des scripts locaux (`test_delta_sync.py`, `test_scan_local.py`). Les conserver uniquement dans les scripts cloud (`automate_scan.py`, `automate_delta_sync.py`).
+**Context**: 2 tests locaux échoués: (1) 6/6 faux positifs avec remontages inutiles purgeant le dir-cache rclone → scan +0 delta alors que des fichiers ont été ajoutés, (2) machine gelée par remontage FUSE pendant I/O actives. Le timeout 30s du healthcheck est adapté au cloud (latence S3 <1ms) mais produit des faux positifs systématiques sur connexion résidentielle. Les paramètres rclone de résilience (`--timeout 120m`, `--retries 20`) suffisent en local.
+**Alternatives considered**: Augmenter le timeout du healthcheck (quelle valeur? trop variable sur résidentiel), healthcheck informatif sans remontage automatique (ajoute du code pour peu de valeur), désactiver MountMonitor via flag CLI (complexité pour un cas simple).
+**Date**: 2026-02-11
+
+### Remove ensure_mount_healthy() from cloud scripts (MountMonitor suffices)
+
+**Decision**: Retirer les appels `ensure_mount_healthy()` (vérification ponctuelle avant scan) des scripts cloud. Le MountMonitor continu en arrière-plan suffit.
+**Context**: Avoir à la fois le MountMonitor (continu, toutes les 60s) et ensure_mount_healthy (ponctuel, avant chaque scan) crée un risque de double remontage concurrent. Dans le test 1, les logs montrent "Remontage déjà en cours par MountMonitor, attente..." — preuve de la concurrence. Le MountMonitor seul couvre le besoin en cloud.
+**Alternatives considered**: Ajouter ensure_mount_healthy dans automate_scan.py pour cohérence (double emploi avec MountMonitor), garder les deux avec un lock global (complexité pour rien).
+**Date**: 2026-02-11
+
+### Stop MountMonitor before Export phase
+
+**Decision**: Stopper le MountMonitor avant la phase Export (avec `mount_monitor = None`) plutôt que dans le `finally` uniquement.
+**Context**: L'export lit des fichiers locaux (DB Plex, métadonnées), pas S3. Le MountMonitor continuait à tourner pendant l'export, détectant des "pannes" et remontant inutilement (test 1: 4 remontages pendant l'export). Le `finally` garde un filet de sécurité pour les exceptions survenant avant l'export.
+**Alternatives considered**: Stopper dans le finally uniquement (remontages parasites pendant export), ne pas stopper du tout (thread daemon meurt avec le processus, mais pas de stats et arrêt sale).
+**Date**: 2026-02-11

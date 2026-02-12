@@ -65,7 +65,6 @@ from common.plex_setup import (
     enable_music_analysis_only,
     enable_all_analysis
 )
-from common.mount_monitor import MountHealthMonitor
 from common.plex_scan import (
     trigger_sonic_analysis,
     get_monitoring_params,
@@ -160,7 +159,6 @@ def main():
 
         # Flag pour l'analyse Sonic (mis à jour après vérification Plex Pass)
         CAN_DO_SONIC = False
-        mount_monitor = None
 
         # 3. Préparation environnement
         print_phase_header(1, "PRÉPARATION")
@@ -239,18 +237,6 @@ def main():
         if not plex_claim:
             print("❌ PLEX_CLAIM requis")
             return
-
-        # Démarrer le monitoring du montage APRÈS avoir le claim
-        mount_monitor = MountHealthMonitor(
-            ip=ip,
-            mount_point=str(MOUNT_DIR),
-            rclone_remote=env['S3_BUCKET'],
-            profile=rclone_profile,
-            cache_dir=str(CACHE_DIR),
-            log_file=str(LOG_FILE),
-            check_interval=60  # Vérification toutes les minutes
-        )
-        mount_monitor.start()
 
         # 6. Lancement Plex
         print_phase_header(4, "DÉMARRAGE PLEX")
@@ -576,10 +562,6 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
-        # Arrêter le monitoring du montage
-        if mount_monitor:
-            mount_monitor.stop()
-
         # === DIAGNOSTIC POST-MORTEM ===
         print("\n" + "=" * 60)
         print("🔍 DIAGNOSTIC POST-MORTEM")

@@ -66,8 +66,7 @@ from common.plex_setup import (
     disable_all_background_tasks,
     enable_music_analysis_only,
     enable_all_analysis,
-    collect_plex_logs,
-    ensure_mount_healthy
+    collect_plex_logs
 )
 from common.mount_monitor import MountHealthMonitor
 from common.plex_scan import (
@@ -429,30 +428,20 @@ Profils d'instance:
             if music_section_id:
                 print(f"\n8.2 Scan de la section Musique [{music_section_id}] {music_section_name}...")
 
-                # Vérifier le montage S3 avant le scan
-                mount_ok = ensure_mount_healthy(
-                    instance_ip, env['S3_BUCKET'], profile,
-                    CLOUD_MOUNT_POINT, CLOUD_CACHE_DIR, CLOUD_LOG_FILE,
-                    phase_name="scan Musique")
-                if not mount_ok:
-                    print("   ❌ Montage S3 défaillant, scan Musique ANNULÉ")
-                    music_section_id = None
-                    stats_after_scan = stats_before
-                else:
-                    trigger_section_scan(instance_ip, 'plex', plex_token, music_section_id, force=args.force_scan)
+                trigger_section_scan(instance_ip, 'plex', plex_token, music_section_id, force=args.force_scan)
 
-                    # Attendre que le scan soit terminé (4h pour absorber les nouveaux items)
-                    wait_section_idle(instance_ip, 'plex', plex_token, music_section_id,
-                                      section_type='artist', phase='scan', config_path='/opt/plex_data/config',
-                                      timeout=14400)
+                # Attendre que le scan soit terminé (4h pour absorber les nouveaux items)
+                wait_section_idle(instance_ip, 'plex', plex_token, music_section_id,
+                                  section_type='artist', phase='scan', config_path='/opt/plex_data/config',
+                                  timeout=14400)
 
-                    # Analyse du delta de scan
-                    print("\n📊 Analyse du delta de scan:")
-                    stats_after_scan = get_library_stats_from_db(instance_ip, '/opt/plex_data/config')
-                    delta_tracks = stats_after_scan['tracks'] - stats_before['tracks']
-                    delta_artists = stats_after_scan['artists'] - stats_before['artists']
-                    print(f"   Nouvelles pistes   : +{delta_tracks}")
-                    print(f"   Nouveaux artistes  : +{delta_artists}")
+                # Analyse du delta de scan
+                print("\n📊 Analyse du delta de scan:")
+                stats_after_scan = get_library_stats_from_db(instance_ip, '/opt/plex_data/config')
+                delta_tracks = stats_after_scan['tracks'] - stats_before['tracks']
+                delta_artists = stats_after_scan['artists'] - stats_before['artists']
+                print(f"   Nouvelles pistes   : +{delta_tracks}")
+                print(f"   Nouveaux artistes  : +{delta_artists}")
             else:
                 print("   ⚠️  Aucune section Musique trouvée")
                 stats_after_scan = stats_before
@@ -557,15 +546,6 @@ Profils d'instance:
             print("\n9.2 Scan et analyse des sections restantes (séquentiel)...")
 
             for section_name, info in other_sections:
-                # Vérifier le montage S3 avant chaque scan
-                mount_ok = ensure_mount_healthy(
-                    instance_ip, env['S3_BUCKET'], profile,
-                    CLOUD_MOUNT_POINT, CLOUD_CACHE_DIR, CLOUD_LOG_FILE,
-                    phase_name=f"scan {section_name}")
-                if not mount_ok:
-                    print(f"   ❌ Montage S3 défaillant, scan de '{section_name}' ANNULÉ")
-                    continue
-
                 # Scan de la section
                 print(f"\n   🔍 Scan de '{section_name}' (ID: {info['id']}, type: {info['type']})")
                 trigger_section_scan(instance_ip, 'plex', plex_token, info['id'], force=False)
@@ -599,6 +579,11 @@ Profils d'instance:
         else:
             print_phase_header(9, "VALIDATION AUTRES SECTIONS - SKIPPÉE")
             print("⏭️  Aucune section à traiter")
+
+        # Arrêter le monitoring S3 (plus nécessaire pour l'export qui lit le disque local)
+        if mount_monitor is not None:
+            mount_monitor.stop()
+            mount_monitor = None
 
         # === PHASE 10: EXPORT FINAL ===
         print_phase_header(10, "EXPORT FINAL")
@@ -659,7 +644,7 @@ Profils d'instance:
         import traceback
         traceback.print_exc()
     finally:
-        # Arrêter le monitor de montage s'il est actif
+        # Arrêter le monitor s'il n'a pas été arrêté en phase Export
         if mount_monitor is not None:
             mount_monitor.stop()
 
