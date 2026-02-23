@@ -762,6 +762,17 @@ def is_sonic_running(ip, container='plex'):
     return 'running' in result.stdout
 
 
+def get_container_cpu(ip, container='plex'):
+    """Retourne le % CPU du conteneur Docker."""
+    cpu_result = execute_command(
+        ip,
+        f"docker stats {container} --no-stream --format '{{{{.CPUPerc}}}}'",
+        capture_output=True, check=False
+    )
+    cpu_str = cpu_result.stdout.strip().replace('%', '')
+    return float(cpu_str) if cpu_str and cpu_str != 'N/A' else 0.0
+
+
 def wait_plex_stabilized(ip, container, plex_token, cooldown_checks=3, check_interval=60, cpu_threshold=20.0, timeout=1800):
     """
     Attend que Plex soit complètement stabilisé (aucune activité de fond).
@@ -799,13 +810,7 @@ def wait_plex_stabilized(ip, container, plex_token, cooldown_checks=3, check_int
         scanner_running = 'running' in scanner_result.stdout
 
         # Vérifier le CPU
-        cpu_result = execute_command(
-            ip,
-            f"docker stats {container} --no-stream --format '{{{{.CPUPerc}}}}'",
-            capture_output=True, check=False
-        )
-        cpu_str = cpu_result.stdout.strip().replace('%', '')
-        cpu_percent = float(cpu_str) if cpu_str and cpu_str != 'N/A' else 0.0
+        cpu_percent = get_container_cpu(ip, container)
 
         is_idle = (active_tasks == 0 and not scanner_running and cpu_percent < cpu_threshold)
 
@@ -901,7 +906,11 @@ def get_section_activity(ip, container, plex_token, section_id):
 
 def wait_section_idle(ip, container, plex_token, section_id, section_type=None, phase='scan', config_path=None, timeout=3600, check_interval=30, consecutive_idle=3, health_check_fn=None):
     """
-    Attend qu'une section soit VRAIMENT inactive.
+    Attend qu'une section soit VRAIMENT inactive (API + CPU).
+
+    Combine la détection d'activité Plex (API + scanner process) avec le monitoring
+    CPU du conteneur pour éviter les faux idle quand FFMPEG ou le Butler travaillent
+    encore en arrière-plan.
 
     Args:
         ip: 'localhost' ou IP remote
@@ -909,9 +918,9 @@ def wait_section_idle(ip, container, plex_token, section_id, section_type=None, 
         plex_token: Token d'authentification Plex
         section_id: ID de la section
         section_type: Type de section ('artist', 'movie', 'show', 'photo') pour timeout adaptatif
-        phase: 'scan' ou 'analyze' - personnalise les messages affichés
+        phase: 'scan' ou 'analyze' - personnalise les messages et paramètres
         config_path: Chemin config Plex (optionnel, pour comptage progression DB)
-        timeout: Timeout en secondes (défaut: 3600 = 1h, 4h pour photos)
+        timeout: Timeout de sécurité en secondes (défaut: 3600)
         check_interval: Intervalle entre checks (défaut: 30s)
         consecutive_idle: Nombre de checks idle consécutifs requis (défaut: 3)
         health_check_fn: Fonction optionnelle pour vérifier la santé du montage
@@ -928,13 +937,37 @@ def wait_section_idle(ip, container, plex_token, section_id, section_type=None, 
         phase_icon = "🔍"
         phase_msg = "Scan en cours"
 
-    # Timeout adaptatif selon le type de section
-    if section_type == 'photo' and timeout == 3600:
-        timeout = 14400  # 4h pour photos (génération thumbnails longue)
-        print(f"⏳ [{time.strftime('%H:%M:%S')}] Attente section {section_id} (photos, timeout étendu: 4h)...")
-    else:
-        timeout_str = f"{timeout//3600}h" if timeout >= 3600 else f"{timeout//60}min"
-        print(f"⏳ [{time.strftime('%H:%M:%S')}] Attente section {section_id} (timeout: {timeout_str})...")
+    # Paramètres adaptatifs par phase (sauf si le caller a passé des valeurs explicites)
+    caller_explicit_timeout = (timeout != 3600)
+    caller_explicit_interval = (check_interval != 30)
+    caller_explicit_idle = (consecutive_idle != 3)
+
+    if phase == 'analyze':
+        if not caller_explicit_interval:
+            check_interval = 120  # 2min entre checks (analyse longue)
+        if not caller_explicit_idle:
+            consecutive_idle = 5  # 5 × 120s = 10min de silence confirmé
+
+    # Timeouts de sécurité par type de section (si le caller n'a pas passé de valeur explicite)
+    SAFETY_TIMEOUTS = {
+        'movie': 14400,   # 4h
+        'show': 7200,     # 2h
+        'photo': 28800,   # 8h
+        'artist': 14400,  # 4h
+    }
+    if not caller_explicit_timeout:
+        timeout = SAFETY_TIMEOUTS.get(section_type, 7200)
+
+    # Seuil CPU pour considérer le conteneur idle
+    cpu_threshold = 20.0
+
+    # Grace period : ignorer les premiers checks pour laisser le Scanner démarrer
+    grace_period = 60
+
+    timeout_str = f"{timeout//3600}h" if timeout >= 3600 else f"{timeout//60}min"
+    idle_window = check_interval * consecutive_idle
+    idle_window_str = f"{idle_window//60}min" if idle_window >= 60 else f"{idle_window}s"
+    print(f"⏳ [{time.strftime('%H:%M:%S')}] Attente section {section_id} (timeout: {timeout_str}, idle: {idle_window_str})")
 
     # Comptage initial si config_path fourni
     initial_count = 0
@@ -955,10 +988,17 @@ def wait_section_idle(ip, container, plex_token, section_id, section_type=None, 
                 return False
 
         activity = get_section_activity(ip, container, plex_token, section_id)
+        cpu_percent = get_container_cpu(ip, container)
 
-        if activity['is_idle']:
+        # Idle = API idle ET CPU bas (évite faux idle quand FFMPEG/Butler travaille)
+        is_truly_idle = activity['is_idle'] and cpu_percent < cpu_threshold
+
+        # Grace period : ne pas compter les idles dans les premières secondes
+        in_grace = elapsed < grace_period
+
+        if is_truly_idle and not in_grace:
             idle_count += 1
-            print(f"   [{time.strftime('%H:%M:%S')}] ⏸️  Idle: {idle_count}/{consecutive_idle}")
+            print(f"   [{time.strftime('%H:%M:%S')}] ⏸️  Idle {idle_count}/{consecutive_idle} (CPU: {cpu_percent:.1f}%)")
 
             if idle_count >= consecutive_idle:
                 print(f"   [{time.strftime('%H:%M:%S')}] ✅ Section {section_id} inactive après {elapsed//60}min")
@@ -966,6 +1006,9 @@ def wait_section_idle(ip, container, plex_token, section_id, section_type=None, 
         else:
             idle_count = 0
             status_parts = []
+
+            if in_grace:
+                status_parts.append("⏳ Grace period")
 
             if activity['refreshing']:
                 status_parts.append("🔄 Refreshing")
@@ -996,13 +1039,16 @@ def wait_section_idle(ip, container, plex_token, section_id, section_type=None, 
                     pct = int(analyzed / current_count * 100) if current_count > 0 else 0
                     status_parts.append(f"{analyzed}/{current_count} ({pct}%)")
 
+            # Toujours afficher le CPU
+            status_parts.append(f"CPU: {cpu_percent:.1f}%")
+
             elapsed_str = f"{elapsed//60:02d}:{elapsed%60:02d}"
             print(f"   [{time.strftime('%H:%M:%S')}] {elapsed_str} | {' | '.join(status_parts)}")
 
         time.sleep(check_interval)
 
     elapsed = int(time.time() - start_time)
-    print(f"   [{time.strftime('%H:%M:%S')}] ⚠️  Timeout après {elapsed//60}min")
+    print(f"   [{time.strftime('%H:%M:%S')}] 🚨 Timeout de sécurité après {elapsed//60}min (anomalie)")
     return False
 
 
@@ -1266,13 +1312,7 @@ def wait_sonic_complete(ip, config_path, section_id, container='plex', timeout=8
         delta_total = current_count - initial_count
 
         # Vérifier le CPU du conteneur
-        cpu_result = execute_command(
-            ip,
-            f"docker stats {container} --no-stream --format '{{{{.CPUPerc}}}}'",
-            capture_output=True, check=False
-        )
-        cpu_str = cpu_result.stdout.strip().replace('%', '')
-        cpu_percent = float(cpu_str) if cpu_str and cpu_str != 'N/A' else 0.0
+        cpu_percent = get_container_cpu(ip, container)
 
         # Vérifier si Sonic tourne
         sonic_running = is_sonic_running(ip, container)
