@@ -297,6 +297,13 @@ Technical decisions and their context. Added via `/retro`.
 **Alternatives considered**: Ajouter ensure_mount_healthy dans automate_scan.py pour cohérence (double emploi avec MountMonitor), garder les deux avec un lock global (complexité pour rien).
 **Date**: 2026-02-11
 
+### Hybrid stall detection (CPU + API) for wait_section_idle()
+
+**Decision**: Combiner la détection d'activité Plex (API + scanner process) avec le monitoring CPU du conteneur Docker pour déterminer l'idle. Paramètres adaptatifs par phase (scan: 30s×3=90s, analyze: 120s×5=10min). Timeouts de sécurité par type de section (movie 4h, show 2h, photo 8h, artist 4h).
+**Context**: L'analyse Movies a timeout après 60min alors que FFMPEG travaillait encore (thumbnails, art, crédits). Le compteur DB affichait 257/257 (100%) mais `Plex Media Scanner` tournait toujours. Le pattern est déjà éprouvé dans `wait_sonic_complete()` (stall detection) et `wait_plex_stabilized()` (CPU monitoring). Le Butler Plex lance aussi des tâches de maintenance utiles qu'il faut laisser finir.
+**Alternatives considered**: Timeout fixe plus long (ne résout pas le problème fondamental), monitoring CPU seul sans API (manque la détection du scanner process), modifier get_section_activity() pour inclure le CPU (modifie le contrat de l'API utilisée ailleurs).
+**Date**: 2026-02-23
+
 ### Stop MountMonitor before Export phase
 
 **Decision**: Stopper le MountMonitor avant la phase Export (avec `mount_monitor = None`) plutôt que dans le `finally` uniquement.

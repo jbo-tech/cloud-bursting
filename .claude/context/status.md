@@ -6,7 +6,7 @@ Déléguer les tâches d'indexation intensives de Plex (scan, génération de m�
 
 ## Current focus
 
-Diagnostic de 3 échecs consécutifs du test local `test_delta_sync.py --section Movies`. Le scanner Plex voit les dossiers mais pas les fichiers à l'intérieur → supprime 221/224 films. En attente de vérification S3 par l'utilisateur.
+`wait_section_idle()` refactoré avec timeout adaptatif et stall detection (CPU + API). Prêt pour re-test. Diagnostic Movies (fichiers invisibles rclone FUSE) toujours en attente de vérification S3.
 
 **Scripts principaux:**
 - `automate_scan.py` - Cloud scan from scratch (MountMonitor, stop avant Export)
@@ -36,6 +36,24 @@ Diagnostic de 3 échecs consécutifs du test local `test_delta_sync.py --section
 
 <!-- Entries added by /retro, newest first -->
 
+### 2026-02-23 - Timeout adaptatif wait_section_idle()
+
+- Done:
+  - **Helper `get_container_cpu()`**: extrait le pattern `docker stats --no-stream` dupliqué 3 fois (wait_plex_stabilized, wait_sonic_complete, et le nouveau wait_section_idle)
+  - **Refactoring `wait_section_idle()`** dans `common/plex_scan.py`:
+    - Monitoring CPU ajouté: `is_truly_idle = activity['is_idle'] and cpu_percent < 20%`
+    - Paramètres adaptatifs: phase analyze = 120s × 5 = 10min silence (phase scan inchangée: 30s × 3)
+    - Timeouts de sécurité par section: movie 4h, show 2h, photo 8h, artist 4h (défaut 2h)
+    - Grace period 60s au démarrage (évite faux idle avant que le Scanner lance)
+    - CPU affiché dans toutes les lignes de status
+    - Message timeout changé en `🚨 Timeout de sécurité` (anomalie, pas terminaison normale)
+  - Rétrocompatibilité totale: callers avec params explicites respectés, aucun script modifié
+  - Validation: import OK (4 scripts), ruff clean (0 nouvelle erreur)
+- Next:
+  - Tester en conditions réelles (cloud ou local)
+  - Vérifier les fichiers S3 Movies (diagnostic rclone FUSE toujours ouvert)
+  - Lancer `automate_delta_sync.py` sur Scaleway
+
 ### 2026-02-13 - Analyse de 3 échecs test Movies
 
 - Done:
@@ -43,25 +61,12 @@ Diagnostic de 3 échecs consécutifs du test local `test_delta_sync.py --section
     - Run 1 (`20260213_104705`): Scanner supprime 221/224 films. 0 ajouté. DB 315→94.
     - Run 2 (`20260213_111038`): DB corrompue pendant remapping (`database disk image is malformed`). Plex crashe en boucle.
     - Run 3 (`20260213_140321`): Identique au Run 1. Scanner supprime 221/224 films.
-  - **Root cause Run 2**: DB archive possiblement corrompue sur les tables liées à TVShows/Kids TV. Le UPDATE SQL du remapping aggrave la corruption. Plex refuse de démarrer.
-  - **Root cause Runs 1 & 3**: Les logs Plex montrent explicitement:
-    ```
-    File '/Media/Movies/Dune (2021)/Dune (2021) Bluray-720p.mp4' didn't exist, can't skip.
-    File '/Media/Movies/GoodFellas (1990)/GoodFellas (1990) Bluray-2160p.mkv' didn't exist, can't skip.
-    ```
-    - Dossiers visibles (rclone dir-cache OK) mais **fichiers invisibles** à l'intérieur
-    - rclone stats: `Listed 586490` mais `Transferred: 0 B`
-    - 224 items DB section 3, scanner trouve 0 fichier, supprime 221
-  - **Hypothèses restantes** (non encore vérifiées):
-    - Les fichiers dans S3 ont été renommés/réorganisés depuis décembre 2025
-    - Les fichiers dans S3 existent dans les dossiers mais sous d'autres noms que ceux en DB
-    - Le montage rclone FUSE ne liste pas correctement le contenu des sous-répertoires
+  - **Root cause Runs 1 & 3**: fichiers invisibles dans rclone FUSE (dossiers OK, fichiers non)
+  - **Root cause Run 2**: corruption DB latente exposée par UPDATE SQL massif
 - Blocked:
   - En attente de vérification par l'utilisateur: `rclone ls mega-s4:media-center/Movies/Dune\ (2021)/ --config ./rclone.conf`
 - Next:
   - Vérifier si les fichiers existent dans S3 avec les noms attendus par la DB
-  - Si noms différents: la DB de décembre est obsolète, besoin d'un scan from scratch
-  - Si noms identiques: diagnostiquer pourquoi rclone FUSE ne les expose pas (bug VFS ?)
 
 ### 2026-02-11 - Retrait MountMonitor des scripts locaux + simplification cloud
 
@@ -70,74 +75,31 @@ Diagnostic de 3 échecs consécutifs du test local `test_delta_sync.py --section
     - Test 1 (`20260210_192052`, `--section Movies`): MountMonitor 6/6 faux positifs, remontages inutiles pendant l'export, +0 delta alors que des fichiers ont été ajoutés (remontage a vidé le dir-cache rclone)
     - Test 2 (`20260211_012555`, `--section 'TV Shows'`): bloqué en Phase 7, machine gelée (deadlock FUSE probable lors du remontage pendant I/O active)
   - **Diagnostic root cause**: timeout 30s du healthcheck trop agressif pour connexion résidentielle → faux positifs systématiques → remontages inutiles → dir-cache purgé → scan échoue silencieusement
-  - **Retrait MountMonitor des scripts locaux** (`test_delta_sync.py`, `test_scan_local.py`):
-    - Retiré imports MountHealthMonitor et ensure_mount_healthy
-    - Retiré création/start/stop du monitor
-    - Retiré healthcheck pré-scan (ensure_mount_healthy avant chaque section)
-    - Retiré health_check_fn dans wait_sonic_complete
-    - Corrigé indentation (bloc sur-indenté après retrait du if/else)
-  - **Simplification scripts cloud** (`automate_delta_sync.py`, `automate_scan.py`):
-    - Retiré ensure_mount_healthy (MountMonitor continu suffit en cloud)
-    - Déplacé mount_monitor.stop() avant la phase Export (plus nécessaire pour lecture disque local)
-    - Gardé filet de sécurité dans finally (arrêt propre + stats en cas d'exception)
-  - **Validation infra-expert**: stop() dans finally est correct (arrête le thread, affiche stats, empêche remontages — ne déclenche jamais de remontage)
+  - **Retrait MountMonitor des scripts locaux** (`test_delta_sync.py`, `test_scan_local.py`)
+  - **Simplification scripts cloud**: stop() avant Export, filet sécurité dans finally
 - Next:
-  - Valider test local `test_delta_sync.py --section Movies` (en cours)
-  - Vérifier que le delta de scan détecte les nouveaux fichiers
-  - Lancer `automate_delta_sync.py` sur Scaleway
+  - Valider test local `test_delta_sync.py --section Movies`
 
 ### 2026-02-09 - Fix montage dégradé + MountMonitor annulable + Docker pre-pull
 
 - Done:
-  - **Analyse logs test** (`20260209_221640`): montage rclone dégradé → Plex supprime 221/224 films
-    - Dir-cache 72h = répertoires listables mais fichiers I/O bloqué
-    - Scanner Plex interprète "fichiers inaccessibles" comme "fichiers supprimés"
-  - **Solution A - Healthcheck pré-scan**: `ensure_mount_healthy()` avant chaque `trigger_section_scan()`
-    - Si montage cassé: scan annulé, `music_section_id = None`, `stats_after_scan = stats_before`
-    - Implémenté dans `test_delta_sync.py` et `automate_delta_sync.py`
-  - **Solution B - Remount annulable**: `remount_s3_if_needed()` accepte `stop_event`
-    - `_interrupted()` + `_sleep()` helpers, 3 checkpoints dans la boucle de retry
-    - `mount_monitor.py`: passe `self._stop_event`, join timeout 35s → 60s
-  - **Solution C - Docker pre-pull**: `docker pull` en Phase 1 dans `test_delta_sync.py` et `test_scan_local.py`
-    - Cloud: déjà dans `setup_instance.sh:60`, pas de changement nécessaire
-  - **Documentation**: 3 anti-patterns + 2 decisions ajoutés
-  - **Décision**: risque résiduel (montage tombe PENDANT scan) accepté, pas de watchdog (sur-ingénierie)
-- Bugs corrigés pendant implémentation:
-  - Control flow cassé en Phase 6 (elif après mount check → restructuré avec if/else)
-  - Variable `rclone_profile` vs `profile` dans automate_delta_sync.py
-  - f-strings sans placeholders (ruff)
+  - Healthcheck pré-scan `ensure_mount_healthy()`, remount annulable via `stop_event`, Docker pre-pull local
+  - 3 anti-patterns + 2 decisions documentés
 - Next:
-  - Relancer test local `test_delta_sync.py --section Movies` pour valider les 3 fixes
-  - Lancer `automate_delta_sync.py` sur Scaleway (run 3 jours)
-  - Valider Sonic analysis sur 375k pistes
-  - Migrer Photos vers Immich séparément
+  - Relancer test local Movies
 
 ### 2026-02-05 - Timeouts 3 jours + décision Photos→Immich
 
 - Done:
-  - **Analyse architecture**: streaming (séquentiel, 1 fichier) OK sur résidentiel, analyse (parallèle, 1000s requêtes) nécessite cloud
-  - **Décision Photos → Immich**: Plex inadapté pour photos, saturation NAT résidentielle confirmée
-  - **Timeouts cloud 3 jours** pour run Sonic complet (375k pistes restantes):
-    - `cloud_intensive.absolute_timeout`: 86400 (24h) → 259200 (72h)
-    - `wait_plex_fully_ready`: 600s → 900s
-    - `wait_section_idle` musique: ajout explicit `timeout=14400` (4h)
-    - `wait_section_idle` autres sections (scan + analyze): 3600 → 14400 (4h)
-  - **MountMonitor refactoré**: I/O hors lock, threading.Event, stop() fiable
+  - Timeouts cloud 3 jours pour run Sonic complet (375k pistes restantes)
+  - MountMonitor refactoré: I/O hors lock, threading.Event, stop() fiable
 - Next:
   - Lancer `automate_delta_sync.py` sur Scaleway (run 3 jours)
-  - Valider Sonic analysis sur 375k pistes
-  - Migrer Photos vers Immich séparément
 
 ### 2026-02-05 - Feature Path Remapping + audit faux positifs
 
 - Done:
-  - Fix montage FUSE stale: résolu via `fusermount -u`
-  - Fix vérification intégrité DB: remplacé `PRAGMA integrity_check` par requête simple (tables FTS incompatibles)
-  - **Feature Path Remapping:**
-    - `path_mappings.json` - fichier de config des mappings
-    - `load_path_mappings()` - charge et valide le fichier JSON
-    - `remap_library_paths()` - remappe `section_locations` + `media_parts` avec backup
-    - Argument `--path-mappings FILE` dans test_delta_sync.py et automate_delta_sync.py
-  - Mise en conformité `automate_delta_sync.py` avec la feature remapping
+  - Fix montage FUSE stale, fix vérification intégrité DB (tables FTS)
+  - Feature Path Remapping: `path_mappings.json`, `load_path_mappings()`, `remap_library_paths()`
 - Next:
   - Relancer test local TV Shows pour valider le path remapping
