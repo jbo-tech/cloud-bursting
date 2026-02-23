@@ -356,3 +356,17 @@ temps_stall = stall_threshold × check_interval
 **Cause**: `mount_monitor.stop()` dans le `finally` block, donc le monitor tourne pendant toute la phase Export qui ne lit que le disque local.
 **Solution**: Stopper le monitor AVANT la phase Export (`mount_monitor.stop(); mount_monitor = None`). Garder un filet de sécurité dans finally pour le cas d'exception avant l'export.
 **Date**: 2026-02-11
+
+### Scanner sees directories but not files inside (rclone FUSE)
+
+**Problem**: Plex scanner trouve les dossiers (`Processing directory /Media/Movies/Dune (2021)`) mais pas les fichiers dedans (`File 'Dune (2021) Bluray-720p.mp4' didn't exist`). Résultat: 0 ajouté, 221 supprimé en 2 secondes.
+**Cause**: Soit les fichiers en S3 ont des noms différents de ceux enregistrés en DB (archive DB de décembre 2025, fichiers potentiellement renommés depuis), soit le montage rclone FUSE ne liste pas correctement le contenu des sous-répertoires. Le rclone stats montre `Listed 586490` mais `Transferred: 0 B`.
+**Solution**: Avant de lancer un delta sync, vérifier que les fichiers existent dans S3 avec les MÊMES noms que dans la DB. Commande: `rclone ls mega-s4:media-center/Movies/<dossier>/ --config ./rclone.conf`. Si les noms ont changé, un scan from scratch est nécessaire (pas un delta sync).
+**Date**: 2026-02-13
+
+### DB corruption during SQL remapping (intermittent)
+
+**Problem**: `database disk image is malformed` pendant le UPDATE SQL de remapping des chemins. Plex crashe en boucle ensuite.
+**Cause**: La DB Plex (15 GB, tables FTS) peut avoir une corruption latente non détectée par `SELECT COUNT(*) FROM library_sections`. Le simple SELECT lit quelques pages, pas les tables FTS ni les index. Un UPDATE massif (30k+ lignes dans media_parts) expose la corruption.
+**Solution**: Pas de solution simple. La vérification PRAGMA échoue sur les tables FTS de Plex. Alternatives: (1) tester un UPDATE sur une petite table avant le gros remapping, (2) copier la DB et opérer sur la copie, (3) si erreur SQL pendant remapping, restaurer le backup automatiquement.
+**Date**: 2026-02-13

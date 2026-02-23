@@ -6,7 +6,7 @@ Déléguer les tâches d'indexation intensives de Plex (scan, génération de m�
 
 ## Current focus
 
-MountMonitor retiré des scripts locaux, simplifié dans les scripts cloud. Prêt pour re-test local puis test cloud Scaleway.
+Diagnostic de 3 échecs consécutifs du test local `test_delta_sync.py --section Movies`. Le scanner Plex voit les dossiers mais pas les fichiers à l'intérieur → supprime 221/224 films. En attente de vérification S3 par l'utilisateur.
 
 **Scripts principaux:**
 - `automate_scan.py` - Cloud scan from scratch (MountMonitor, stop avant Export)
@@ -35,6 +35,33 @@ MountMonitor retiré des scripts locaux, simplifié dans les scripts cloud. Prê
 ## Log
 
 <!-- Entries added by /retro, newest first -->
+
+### 2026-02-13 - Analyse de 3 échecs test Movies
+
+- Done:
+  - **Analyse détaillée de 3 logs de test** (`--section Movies`):
+    - Run 1 (`20260213_104705`): Scanner supprime 221/224 films. 0 ajouté. DB 315→94.
+    - Run 2 (`20260213_111038`): DB corrompue pendant remapping (`database disk image is malformed`). Plex crashe en boucle.
+    - Run 3 (`20260213_140321`): Identique au Run 1. Scanner supprime 221/224 films.
+  - **Root cause Run 2**: DB archive possiblement corrompue sur les tables liées à TVShows/Kids TV. Le UPDATE SQL du remapping aggrave la corruption. Plex refuse de démarrer.
+  - **Root cause Runs 1 & 3**: Les logs Plex montrent explicitement:
+    ```
+    File '/Media/Movies/Dune (2021)/Dune (2021) Bluray-720p.mp4' didn't exist, can't skip.
+    File '/Media/Movies/GoodFellas (1990)/GoodFellas (1990) Bluray-2160p.mkv' didn't exist, can't skip.
+    ```
+    - Dossiers visibles (rclone dir-cache OK) mais **fichiers invisibles** à l'intérieur
+    - rclone stats: `Listed 586490` mais `Transferred: 0 B`
+    - 224 items DB section 3, scanner trouve 0 fichier, supprime 221
+  - **Hypothèses restantes** (non encore vérifiées):
+    - Les fichiers dans S3 ont été renommés/réorganisés depuis décembre 2025
+    - Les fichiers dans S3 existent dans les dossiers mais sous d'autres noms que ceux en DB
+    - Le montage rclone FUSE ne liste pas correctement le contenu des sous-répertoires
+- Blocked:
+  - En attente de vérification par l'utilisateur: `rclone ls mega-s4:media-center/Movies/Dune\ (2021)/ --config ./rclone.conf`
+- Next:
+  - Vérifier si les fichiers existent dans S3 avec les noms attendus par la DB
+  - Si noms différents: la DB de décembre est obsolète, besoin d'un scan from scratch
+  - Si noms identiques: diagnostiquer pourquoi rclone FUSE ne les expose pas (bug VFS ?)
 
 ### 2026-02-11 - Retrait MountMonitor des scripts locaux + simplification cloud
 
@@ -96,55 +123,10 @@ MountMonitor retiré des scripts locaux, simplifié dans les scripts cloud. Prê
     - `wait_section_idle` musique: ajout explicit `timeout=14400` (4h)
     - `wait_section_idle` autres sections (scan + analyze): 3600 → 14400 (4h)
   - **MountMonitor refactoré**: I/O hors lock, threading.Event, stop() fiable
-- Findings:
-  - Streaming S3 → résidentiel = OK (débit séquentiel suffisant pour 1 utilisateur)
-  - Analyse S3 → résidentiel = KO (saturation NAT ~4096 sessions parallèles)
-  - Cloud bursting = approche validée (intra-datacenter S3)
-  - Ajouts réguliers (2-3 films/sem, 5-10 albums) gérables par delta sync cloud
 - Next:
   - Lancer `automate_delta_sync.py` sur Scaleway (run 3 jours)
   - Valider Sonic analysis sur 375k pistes
   - Migrer Photos vers Immich séparément
-
-### 2026-02-05 - Test Photos + fix MountMonitor
-
-- Done:
-  - **Test 1 Photos** (`20260205_114604`): échec complet - `/Photo` non monté dans Docker
-    - 3368 erreurs "FreeImage_Load: failed to open file /Photo/..."
-    - Cause: bibliothèque Photos avait 2 locations (`/Media/Photo` + `/Photo`) mais seul `/Media` monté
-  - **Fix**: ajout mapping `/Photo` → `/Media/Photo` dans `path_mappings.json`
-  - **Test 2 Photos** (`20260205_150723`): mapping validé, 29903 fichiers remappés, 0 erreur FreeImage
-    - Mais: 2375 erreurs rclone "connection reset by peer" (connexion résidentielle → S3 Scaleway)
-    - Analyse bloquée 4h (timeout 240min), compteur oscillant 28168↔28326
-    - Résultat: +1 photo seulement, 13 JPEG corrompus (0.05%, négligeable)
-  - **Fix MountMonitor**: refactoring `_perform_health_check()` et `stop()`
-    - `self._lock` sorti des opérations I/O longues (verify_rclone + remount)
-    - `threading.Event` pour interruption immédiate du sleep dans `_monitor_loop`
-    - `stop()` simplifié: `join(timeout=35)` + `with self._lock` (plus de "Stats indisponibles")
-    - Suppression `import time` devenu inutile
-- Findings:
-  - Le test local Photos n'est pas viable (réseau résidentiel trop lent pour 28k photos via S3)
-  - Le cloud est le bon use-case pour ce volume (lien intra-datacenter S3)
-- Next:
-  - Tester le fix MountMonitor
-  - Lancer test cloud complet (Photos + autres sections)
-
-### 2026-02-05 - Réanalyse test delta + corrections bugs
-
-- Done:
-  - Analyse logs test delta local (`20260205_041326_logs_final_all/`)
-  - **Fix 1 - os.path.exists(None)**: ajout vérification `terminal_log and` avant `os.path.exists()` dans `collect_plex_logs()` (plex_setup.py:1114)
-  - **Fix 2 - Diagnostic Sonic conditionnel**: ajout `if should_process_music:` dans le bloc diagnostic post-mortem (3 scripts)
-  - Initialisation `should_process_music = True` en dehors du try/except
-  - **Réanalyse avec contenu S3**: les données sont INTACTES
-- Findings corrigés:
-  - ❌ "210 épisodes perdus" = FAUX - les DB backup et actuelle sont identiques (938 épisodes)
-  - Le "728" affiché était une lecture de stats pendant timeout rclone (donnée temporairement incorrecte)
-  - Toutes les séries S3 présentes (Columbo, Hart to Hart, Freaks and Geeks, etc.)
-  - Path remapping fonctionne correctement
-- Next:
-  - Relancer test delta pour valider les corrections
-  - Vérifier que les logs Plex et rclone sont collectés
 
 ### 2026-02-05 - Feature Path Remapping + audit faux positifs
 
@@ -157,92 +139,5 @@ MountMonitor retiré des scripts locaux, simplifié dans les scripts cloud. Prê
     - `remap_library_paths()` - remappe `section_locations` + `media_parts` avec backup
     - Argument `--path-mappings FILE` dans test_delta_sync.py et automate_delta_sync.py
   - Mise en conformité `automate_delta_sync.py` avec la feature remapping
-  - Audit infra-expert: identification des faux positifs
-- Audit findings:
-  - ❌ Injection SQL : FAUX POSITIF (fichier local contrôlé par l'utilisateur)
-  - ❌ Import inside function : FAUX POSITIF (lazy import acceptable)
-  - ❌ Pas de rollback auto : DESIGN INTENTIONNEL (backup + message suffit)
-  - ⚠️ Backup remote dans /tmp : Point mineur valide mais impact limité
 - Next:
   - Relancer test local TV Shows pour valider le path remapping
-  - Vérifier que le scan trouve les fichiers dans `/Media/TV`
-
-### 2026-02-04 - Audit complet et correction bugs critiques
-
-- Done:
-  - Audit complet du projet cloud-bursting avec `/audit`
-  - Revue expert infra avec analyse des logs de test (terminal_20260203_225508.log)
-  - **Fix 1**: `args.only` → `args.section` dans 4 scripts (12 occurrences)
-  - **Fix 2**: Deadlock MountHealthMonitor.stop() - ajout timeout 2s sur acquisition lock
-  - **Fix 3**: Validation intégrité DB SQLite avec `PRAGMA integrity_check` avant injection
-  - **Fix 4**: Suppression import inutilisé `quote` dans plex_scan.py
-  - 2 commits: `77e509f` (fixes), `00122e5` (docs)
-- Audit findings corrigés:
-  - 🔴 args.only AttributeError → Fixed
-  - 🔴 Deadlock dans stop() → Fixed avec lock timeout
-  - 🔴 DB corrompue non détectée → Fixed avec PRAGMA integrity_check
-- Next:
-  - Relancer test local pour valider les corrections
-  - Tester workflow cloud complet
-
-### 2026-01-31 - Fix bug args.only + audit code
-
-- Done:
-  - Fix `AttributeError: 'Namespace' object has no attribute 'only'` dans test_delta_sync.py
-  - L'argument CLI est `--section` (stocké dans `args.section`), pas `args.only`
-  - 4 occurrences corrigées (lignes 322, 339-340, 515, 522-524)
-  - Audit complet du fichier test_delta_sync.py
-  - Revue expert infra des points d'audit
-- Next:
-  - Relancer `python test_delta_sync.py --section Movies` pour valider le fix
-  - Committer si OK
-
-### 2026-01-31 - Ajout argument --section pour filtrage par bibliothèque
-
-- Done:
-  - Suppression de `--music-only` dans les 4 scripts principaux
-  - Ajout de `--section` (répétable) pour filtrer par nom de section Plex
-  - Validation des sections demandées avec affichage des sections ignorées
-  - Condition `should_process_music` pour skipper phase Musique si non demandée
-  - Filtrage des autres sections selon `--section`
-  - Initialisation `stats_after_scan = stats_before` pour éviter NameError
-  - Message amélioré: "Aucune section musicale dans le filtre --section ['Movies']"
-  - Harmonisation numérotation: "📚 Identification des sections..." (sans numéro)
-  - Audit et corrections des problèmes identifiés
-- Next:
-  - Tester `python test_delta_sync.py --section Movies` pour valider le filtrage
-  - Committer les changements si OK
-
-### 2026-01-30 - Rollback MountHealthMonitor après deadlock
-
-- Done:
-  - Analyse d'un blocage de 4h+ en phase 4 (après entrée PLEX_CLAIM, rien ne se passait)
-  - Identifié deadlock: `clear_pending_input()` attendait `self._lock` détenu par `_perform_health_check()` pendant 30+ secondes
-  - **Rollback**: retour à l'approche simple - input PLEX_CLAIM AVANT démarrage du monitor
-  - Ajout paramètre `initial_delay` à MountHealthMonitor (défaut 0 pour check immédiat)
-  - Méthodes `set_pending_input()`/`clear_pending_input()` conservées mais inutilisées
-- Next:
-  - Tester le workflow modifié pour valider l'absence de deadlock
-  - Committer les changements si OK
-  - Relancer test complet pour valider Sonic analyse
-
-### 2026-01-29 - Fix trois problèmes majeurs identifiés via analyse logs
-
-- Done:
-  - Analyse logs test local (20260127_150937): identifié 3 problèmes majeurs
-  - **Fix 1 - MountHealthMonitor timing**: déplacé AVANT prompt PLEX_CLAIM (pas après)
-    - test_delta_sync.py, automate_delta_sync.py: réordonné monitor → prompt → Plex
-    - test_scan_local.py, automate_scan.py: ajouté MountHealthMonitor (manquait)
-  - **Fix 2 - Butler interference**: supprimé appels prématurés à enable_plex_analysis_via_api()
-    - Cette fonction déclenchait le Butler DeepMediaAnalysis avant le scan
-    - Les processus --analyze-deeply bloquaient wait_section_idle (144 min timeout)
-    - Analyses Sonic correctement déclenchées par enable_music_analysis_only() en phase 6.3
-  - **Fix 3 - rclone.log dans export**: ajouté paramètre rclone_log à collect_plex_logs()
-    - Modifié common/plex_setup.py pour supporter le téléchargement depuis remote
-    - Mis à jour tous les appels dans les 4 scripts
-  - Nettoyage imports inutilisés (enable_plex_analysis_via_api supprimé où non utilisé)
-  - Syntaxe vérifiée pour tous les fichiers modifiés
-- Next:
-  - Tester les corrections localement
-  - Valider que wait_section_idle ne timeout plus
-  - Valider que rclone.log apparaît dans les archives exportées
