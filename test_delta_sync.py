@@ -90,7 +90,8 @@ from common.plex_scan import (
     wait_plex_stabilized,
     trigger_section_scan,
     trigger_section_analyze,
-    export_intermediate
+    export_intermediate,
+    warm_vfs_cache
 )
 from common.delta_sync import (
     inject_existing_db,
@@ -551,7 +552,10 @@ def main():
                                   section_type=info['type'], phase='scan',
                                   config_path=str(PLEX_CONFIG), timeout=3600)
 
-                # Étape 2: Analyse de la section (thumbnails, chapitres, intros...)
+                # Étape 2: Préchauffage du cache VFS avant analyse
+                warm_vfs_cache(ip, str(PLEX_CONFIG), info['id'], str(MOUNT_DIR))
+
+                # Étape 3: Analyse de la section (thumbnails, chapitres, intros...)
                 print(f"\n   🔬 Analyse de '{section_name}' (ID: {info['id']})")
                 trigger_section_analyze(ip, 'plex', plex_token, info['id'])
 
@@ -561,21 +565,6 @@ def main():
                                   config_path=str(PLEX_CONFIG), timeout=3600)
 
             print("\n✅ Scan et analyse autres sections terminés")
-
-            # 7.3 Affichage récapitulatif
-            print("\n7.3 Récapitulatif...")
-            final_stats = get_library_stats_from_db(ip, str(PLEX_CONFIG))
-
-            print(f"   Musique   : {final_stats['tracks']} pistes ({final_stats['artists']} artistes)")
-            if final_stats.get('movies', 0) > 0 or stats_before.get('movies', 0) > 0:
-                delta_movies = final_stats.get('movies', 0) - stats_before.get('movies', 0)
-                print(f"   Films     : {final_stats.get('movies', 0)} (+{delta_movies})")
-            if final_stats.get('episodes', 0) > 0 or stats_before.get('episodes', 0) > 0:
-                delta_episodes = final_stats.get('episodes', 0) - stats_before.get('episodes', 0)
-                print(f"   Épisodes  : {final_stats.get('episodes', 0)} (+{delta_episodes})")
-            if final_stats.get('photos', 0) > 0 or stats_before.get('photos', 0) > 0:
-                delta_photos = final_stats.get('photos', 0) - stats_before.get('photos', 0)
-                print(f"   Photos    : {final_stats.get('photos', 0)} (+{delta_photos})")
         else:
             print_phase_header(7, "VALIDATION AUTRES SECTIONS - SKIPPÉE")
             print("⏭️  Aucune section à traiter")
@@ -615,16 +604,19 @@ def main():
 
         final_stats = get_library_stats_from_db(ip, str(PLEX_CONFIG))
         sonic_delta = final_stats['tracks_with_sonic'] - stats_before['tracks_with_sonic']
+        delta_movies = final_stats.get('movies', 0) - stats_before.get('movies', 0)
+        delta_episodes = final_stats.get('episodes', 0) - stats_before.get('episodes', 0)
+        delta_photos = final_stats.get('photos', 0) - stats_before.get('photos', 0)
         print(f"\n📊 Statistiques:")
         print(f"   Pistes totales    : {final_stats['tracks']}")
         print(f"   Pistes Sonic      : {final_stats['tracks_with_sonic']} (+{sonic_delta})")
         print(f"   Artistes          : {final_stats['artists']}")
-        if final_stats.get('movies', 0) > 0:
-            print(f"   Films             : {final_stats.get('movies', 0)}")
-        if final_stats.get('episodes', 0) > 0:
-            print(f"   Épisodes          : {final_stats.get('episodes', 0)}")
-        if final_stats.get('photos', 0) > 0:
-            print(f"   Photos            : {final_stats.get('photos', 0)}")
+        if final_stats.get('movies', 0) > 0 or stats_before.get('movies', 0) > 0:
+            print(f"   Films             : {final_stats.get('movies', 0)} (+{delta_movies})")
+        if final_stats.get('episodes', 0) > 0 or stats_before.get('episodes', 0) > 0:
+            print(f"   Épisodes          : {final_stats.get('episodes', 0)} (+{delta_episodes})")
+        if final_stats.get('photos', 0) > 0 or stats_before.get('photos', 0) > 0:
+            print(f"   Photos            : {final_stats.get('photos', 0)} (+{delta_photos})")
 
         print("\n🔄 Pour appliquer sur ZimaBoard:")
         print(f"   scp {archive_name} jbo@zimaboard:/tmp/")

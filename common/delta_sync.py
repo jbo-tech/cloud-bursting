@@ -318,6 +318,93 @@ def load_path_mappings(mappings_file=None):
     return result
 
 
+def repair_plex_db(ip, db_path):
+    """
+    Répare une DB Plex corrompue via .recover de SQLite.
+
+    Détecte la corruption sur media_parts (table critique pour le remapping),
+    puis reconstruit la DB si nécessaire. Utilise .recover (pas .dump) car
+    .dump échoue sur les pages B-tree corrompues, tandis que .recover
+    parcourt les pages raw et récupère les données malgré les index cassés.
+
+    Args:
+        ip: 'localhost' ou IP remote
+        db_path: Chemin absolu vers la DB Plex
+
+    Returns:
+        bool: True si réparée, False si pas de corruption détectée
+
+    Raises:
+        RuntimeError: Si la réparation échoue
+    """
+    print(f"\n🔍 Vérification de l'intégrité de media_parts...")
+
+    # Détection de corruption sur la table critique
+    check_cmd = f"sqlite3 '{db_path}' 'SELECT COUNT(*) FROM media_parts;'"
+    check_result = execute_command(ip, check_cmd, capture_output=True, check=False)
+
+    if check_result.returncode == 0:
+        print(f"   ✅ media_parts OK ({check_result.stdout.strip()} entrées)")
+        return False
+
+    print(f"   ⚠️  Corruption détectée: {check_result.stderr.strip()}")
+    print(f"   🔄 Réparation par .recover...")
+
+    # Compter les tables avant repair
+    tables_before_cmd = f"sqlite3 '{db_path}' 'SELECT COUNT(*) FROM sqlite_master WHERE type=\"table\";'"
+    tables_before = execute_command(ip, tables_before_cmd, capture_output=True, check=False)
+    tables_before_count = tables_before.stdout.strip() if tables_before.returncode == 0 else '?'
+
+    # .recover parcourt les pages raw et reconstruit la DB
+    # Les erreurs sur sqlite_stat/sqlite_master vont à stderr mais n'empêchent
+    # pas la récupération des tables de données
+    repaired_path = f"{db_path}.repaired"
+    recover_cmd = f"sqlite3 '{db_path}' '.recover' | sqlite3 '{repaired_path}'"
+    recover_result = execute_command(ip, recover_cmd, capture_output=True, check=False)
+
+    if recover_result.returncode != 0:
+        # .recover émet des erreurs parse sur les tables internes (sqlite_stat1,
+        # sqlite_sequence, sqlite_master) - c'est normal et attendu
+        stderr_lines = recover_result.stderr.strip().split('\n') if recover_result.stderr.strip() else []
+        print(f"   ⚠️  Warnings recover: {len(stderr_lines)} ligne(s)")
+
+    # Vérifier que le fichier réparé existe et est non-vide
+    size_cmd = f"stat -c%s '{repaired_path}' 2>/dev/null || echo '0'"
+    size_result = execute_command(ip, size_cmd, capture_output=True, check=False)
+    repaired_size = int(size_result.stdout.strip()) if size_result.stdout.strip().isdigit() else 0
+
+    if repaired_size == 0:
+        execute_command(ip, f"rm -f '{repaired_path}'", check=False)
+        raise RuntimeError("Réparation échouée: fichier réparé vide")
+
+    # Vérifier que la DB réparée est fonctionnelle
+    verify_cmd = f"sqlite3 '{repaired_path}' 'SELECT COUNT(*) FROM media_parts;'"
+    verify_result = execute_command(ip, verify_cmd, capture_output=True, check=False)
+
+    if verify_result.returncode != 0:
+        execute_command(ip, f"rm -f '{repaired_path}'", check=False)
+        raise RuntimeError(f"DB réparée toujours corrompue: {verify_result.stderr.strip()}")
+
+    media_parts_count = verify_result.stdout.strip()
+
+    # Compter les tables après repair
+    tables_after_cmd = f"sqlite3 '{repaired_path}' 'SELECT COUNT(*) FROM sqlite_master WHERE type=\"table\";'"
+    tables_after = execute_command(ip, tables_after_cmd, capture_output=True, check=False)
+    tables_after_count = tables_after.stdout.strip() if tables_after.returncode == 0 else '?'
+
+    # Remplacer la DB corrompue par la version réparée
+    replace_cmd = f"mv '{repaired_path}' '{db_path}'"
+    replace_result = execute_command(ip, replace_cmd, capture_output=True, check=False)
+
+    if replace_result.returncode != 0:
+        raise RuntimeError(f"Échec remplacement DB: {replace_result.stderr.strip()}")
+
+    print(f"   📊 Tables: {tables_before_count} → {tables_after_count}")
+    print(f"   📊 media_parts: {media_parts_count} entrées")
+    print(f"   ✅ DB réparée avec succès.")
+    return True
+
+
 def remap_library_paths(ip, plex_config_path, mount_point, mappings, backup_dir=None):
     """
     Remplace les chemins dans la DB Plex selon un dictionnaire de mappings.
@@ -375,6 +462,15 @@ def remap_library_paths(ip, plex_config_path, mount_point, mappings, backup_dir=
             print(f"   ❌ {error_msg}")
             result['errors'].append(error_msg)
             return result
+
+    # 1b. Repair si corruption détectée (avant les requêtes sur media_parts)
+    try:
+        repair_plex_db(ip, db_path)
+    except RuntimeError as e:
+        error_msg = f"Réparation DB échouée: {e}"
+        print(f"   ❌ {error_msg}")
+        result['errors'].append(error_msg)
+        return result
 
     # 2. Appliquer les remappings
     for old_path, new_path in mappings.items():

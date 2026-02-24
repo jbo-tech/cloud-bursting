@@ -78,7 +78,8 @@ from common.plex_scan import (
     wait_plex_stabilized,
     trigger_section_scan,
     trigger_section_analyze,
-    export_intermediate
+    export_intermediate,
+    warm_vfs_cache
 )
 from common.delta_sync import (
     inject_existing_db,
@@ -553,6 +554,9 @@ Profils d'instance:
                                   section_type=info['type'], phase='scan',
                                   config_path='/opt/plex_data/config', timeout=14400)
 
+                # Préchauffage du cache VFS avant analyse
+                warm_vfs_cache(instance_ip, '/opt/plex_data/config', info['id'], '/opt/media')
+
                 # Analyse de la section
                 print(f"\n   🔬 Analyse de '{section_name}' (ID: {info['id']})")
                 trigger_section_analyze(instance_ip, 'plex', plex_token, info['id'])
@@ -561,21 +565,6 @@ Profils d'instance:
                                   config_path='/opt/plex_data/config', timeout=14400)
 
             print("\n✅ Scan et analyse autres sections terminés")
-
-            # 9.3 Récapitulatif
-            print("\n9.3 Récapitulatif...")
-            final_stats = get_library_stats_from_db(instance_ip, '/opt/plex_data/config')
-
-            print(f"   Musique   : {final_stats['tracks']} pistes ({final_stats['artists']} artistes)")
-            if final_stats.get('movies', 0) > 0 or stats_before.get('movies', 0) > 0:
-                delta_movies = final_stats.get('movies', 0) - stats_before.get('movies', 0)
-                print(f"   Films     : {final_stats.get('movies', 0)} (+{delta_movies})")
-            if final_stats.get('episodes', 0) > 0 or stats_before.get('episodes', 0) > 0:
-                delta_episodes = final_stats.get('episodes', 0) - stats_before.get('episodes', 0)
-                print(f"   Épisodes  : {final_stats.get('episodes', 0)} (+{delta_episodes})")
-            if final_stats.get('photos', 0) > 0 or stats_before.get('photos', 0) > 0:
-                delta_photos = final_stats.get('photos', 0) - stats_before.get('photos', 0)
-                print(f"   Photos    : {final_stats.get('photos', 0)} (+{delta_photos})")
         else:
             print_phase_header(9, "VALIDATION AUTRES SECTIONS - SKIPPÉE")
             print("⏭️  Aucune section à traiter")
@@ -623,16 +612,19 @@ Profils d'instance:
 
         final_stats = get_library_stats_from_db(instance_ip, '/opt/plex_data/config')
         sonic_delta = final_stats['tracks_with_sonic'] - stats_before['tracks_with_sonic']
+        delta_movies = final_stats.get('movies', 0) - stats_before.get('movies', 0)
+        delta_episodes = final_stats.get('episodes', 0) - stats_before.get('episodes', 0)
+        delta_photos = final_stats.get('photos', 0) - stats_before.get('photos', 0)
         print(f"\n📊 Statistiques:")
         print(f"   Pistes totales    : {final_stats['tracks']}")
         print(f"   Pistes Sonic      : {final_stats['tracks_with_sonic']} (+{sonic_delta})")
         print(f"   Artistes          : {final_stats['artists']}")
-        if final_stats.get('movies', 0) > 0:
-            print(f"   Films             : {final_stats.get('movies', 0)}")
-        if final_stats.get('episodes', 0) > 0:
-            print(f"   Épisodes          : {final_stats.get('episodes', 0)}")
-        if final_stats.get('photos', 0) > 0:
-            print(f"   Photos            : {final_stats.get('photos', 0)}")
+        if final_stats.get('movies', 0) > 0 or stats_before.get('movies', 0) > 0:
+            print(f"   Films             : {final_stats.get('movies', 0)} (+{delta_movies})")
+        if final_stats.get('episodes', 0) > 0 or stats_before.get('episodes', 0) > 0:
+            print(f"   Épisodes          : {final_stats.get('episodes', 0)} (+{delta_episodes})")
+        if final_stats.get('photos', 0) > 0 or stats_before.get('photos', 0) > 0:
+            print(f"   Photos            : {final_stats.get('photos', 0)} (+{delta_photos})")
 
         print("\n🔄 Pour appliquer sur le serveur Plex local:")
         print(f"   ./update_to_distant_plex.sh {archive_name}")

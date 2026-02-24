@@ -1374,6 +1374,76 @@ def wait_sonic_complete(ip, config_path, section_id, container='plex', timeout=8
     }
 
 
+def warm_vfs_cache(ip, config_path, section_id, mount_point):
+    """
+    Préchauffe le cache VFS rclone en lisant les premiers octets de chaque fichier.
+
+    Lit 64 Ko de chaque fichier média d'une section pour forcer rclone à créer
+    l'entrée VFS cache. Évite les ENOENT quand FFMPEG ouvre les fichiers en parallèle
+    pendant l'analyse Plex.
+
+    Args:
+        ip: 'localhost' ou IP remote
+        config_path: Chemin vers la config Plex (contient la DB)
+        section_id: ID de la section à préchauffer
+        mount_point: Point de montage S3 sur l'hôte (ex: '/opt/media' ou 'tmp/s3-media')
+
+    Returns:
+        dict: {'total': N, 'warmed': N, 'errors': N}
+    """
+    print(f"🔄 Préchauffage du cache VFS pour section {section_id}...")
+
+    db_path = f"{config_path}/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
+
+    # Lister les fichiers de la section depuis la DB
+    query = (
+        "SELECT mp.file FROM media_parts mp "
+        "JOIN media_items mi ON mp.media_item_id = mi.id "
+        "JOIN metadata_items mdi ON mi.metadata_item_id = mdi.id "
+        f"WHERE mdi.library_section_id = {section_id};"
+    )
+
+    result = execute_command(ip, f"sqlite3 '{db_path}' \"{query}\"", capture_output=True, check=False)
+
+    if not result.stdout or not result.stdout.strip():
+        print(f"   ⚠️  Aucun fichier trouvé en DB pour section {section_id}")
+        return {'total': 0, 'warmed': 0, 'errors': 0}
+
+    files = result.stdout.strip().split('\n')
+    total = len(files)
+    print(f"   📊 {total} fichiers à préchauffer")
+
+    # Convertir les chemins DB (/Media/...) en chemins hôte (mount_point/...)
+    # et écrire dans un fichier temporaire pour xargs
+    # On utilise sed directement sur la sortie sqlite3 pour éviter les problèmes de quotes
+    mount_escaped = mount_point.rstrip('/').replace('/', '\\/')
+    write_cmd = f"sqlite3 '{db_path}' \"{query}\" | sed 's/^\\/Media\\//{mount_escaped}\\//' > /tmp/vfs_warmup_files.txt"
+    execute_command(ip, write_cmd, check=False)
+
+    # Lire 64K de chaque fichier en parallèle (4 workers)
+    # -d'\\n' force xargs à séparer par ligne (gère les espaces dans les noms)
+    warmup_cmd = (
+        "xargs -d'\\n' -P4 -I{} sh -c 'head -c 65536 \"{}\" > /dev/null 2>&1 && echo OK || echo FAIL' "
+        "< /tmp/vfs_warmup_files.txt"
+    )
+    warmup_result = execute_command(ip, warmup_cmd, capture_output=True, check=False, timeout=600)
+
+    # Compter les résultats
+    lines = warmup_result.stdout.strip().split('\n') if warmup_result.stdout else []
+    warmed = sum(1 for l in lines if l.strip() == 'OK')
+    errors = sum(1 for l in lines if l.strip() == 'FAIL')
+
+    # Nettoyage
+    execute_command(ip, "rm -f /tmp/vfs_warmup_files.txt", check=False)
+
+    if errors > 0:
+        print(f"   ⚠️  Préchauffage terminé : {warmed}/{total} OK, {errors} erreurs")
+    else:
+        print(f"   ✅ Préchauffage terminé : {warmed}/{total} fichiers en cache")
+
+    return {'total': total, 'warmed': warmed, 'errors': errors}
+
+
 def trigger_section_scan(ip, container, plex_token, section_id, force=False):
     """
     Déclenche le scan d'UNE section.
