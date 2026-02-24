@@ -6,7 +6,7 @@ Déléguer les tâches d'indexation intensives de Plex (scan, génération de m�
 
 ## Current focus
 
-`wait_section_idle()` refactoré avec timeout adaptatif et stall detection (CPU + API). Prêt pour re-test. Diagnostic Movies (fichiers invisibles rclone FUSE) toujours en attente de vérification S3.
+VFS cache warming implémenté pour éviter les ENOENT massifs lors de l'analyse Plex. Prêt pour test intégré (`test_delta_sync.py --section 'TV Shows'`). Diagnostic Movies (fichiers invisibles rclone FUSE) toujours en attente de vérification S3.
 
 **Scripts principaux:**
 - `automate_scan.py` - Cloud scan from scratch (MountMonitor, stop avant Export)
@@ -17,7 +17,7 @@ Déléguer les tâches d'indexation intensives de Plex (scan, génération de m�
 
 ## Reference Database
 
-État de la DB de référence pour delta sync (`plex_db_only_20251220_224449.tar.gz`):
+État de la DB de référence pour delta sync (`plex_delta_sync_20260221_214329.tar.gz`):
 
 | Bibliothèque | Type | Items | État |
 |--------------|------|-------|------|
@@ -30,11 +30,46 @@ Déléguer les tâches d'indexation intensives de Plex (scan, génération de m�
 | Kids - TV Shows | show | 200 épisodes | OK |
 | Adult | movie | 57 films | OK |
 
-**Total:** ~490k items | **Archive:** 5.37 GB (compressé) / 15 GB (DB décompressée)
+**Total:** ~490k items | **Archive:** 5.50 GB (compressé) / 15 GB (DB décompressée)
 
 ## Log
 
 <!-- Entries added by /retro, newest first -->
+
+### 2026-02-24 - VFS cache warming avant analyse
+
+- Done:
+  - **`warm_vfs_cache(ip, config_path, section_id, mount_point)`** ajouté dans `common/plex_scan.py`:
+    - Requête DB pour lister les fichiers de la section (media_parts → media_items → metadata_items)
+    - Conversion chemins DB `/Media/...` → chemins hôte `mount_point/...` via sed
+    - Lecture 64 Ko par fichier en parallèle (xargs -P4, -d'\n' pour noms avec espaces)
+    - Timeout 600s, stats de retour (total/warmed/errors)
+  - **Intégration dans `test_delta_sync.py`**: appel entre wait_section_idle(phase='scan') et trigger_section_analyze() dans la boucle other_sections
+  - **Intégration dans `automate_delta_sync.py`**: même position, chemins cloud (/opt/plex_data/config, /opt/media)
+  - Compilation vérifiée (py_compile) sur les 3 fichiers
+- Next:
+  - Tester `test_delta_sync.py --section 'TV Shows'` pour valider le warm-up
+  - Comparer taux ENOENT avec/sans cache warming (objectif <10% vs 80% avant)
+  - Vérifier les fichiers S3 Movies (diagnostic rclone FUSE toujours ouvert)
+
+### 2026-02-23 - Repair DB + unification output stats
+
+- Done:
+  - **`repair_plex_db(ip, db_path)`** ajouté dans `common/delta_sync.py`:
+    - Détecte la corruption via `SELECT COUNT(*) FROM media_parts`
+    - Répare via `sqlite3 .recover | sqlite3 repaired.db` (pas `.dump` qui échoue sur corruption B-tree)
+    - Vérifie la DB réparée, affiche stats tables avant/après
+    - Return False (saine), True (réparée), RuntimeError (échec)
+  - **Intégration dans `remap_library_paths()`**: appelé après backup, avant boucle de remapping
+  - **Validation 3 scénarios**: DB saine (no-op), index corrompus (508946 entrées récupérées), destruction totale (RuntimeError)
+  - **Unification output stats** (`test_delta_sync.py` + `automate_delta_sync.py`):
+    - Suppression du récapitulatif intermédiaire (7.3 / 9.3) qui dupliquait la lecture DB
+    - Ajout des deltas (+N) pour Films, Épisodes, Photos dans le résumé final (8.4 / 10.4)
+    - Un seul bloc cohérent en fin de script avec tous les compteurs et deltas
+- Next:
+  - Lancer `test_delta_sync.py` complet avec la DB corrompue réelle du ZimaBoard
+  - Vérifier les fichiers S3 Movies (diagnostic rclone FUSE toujours ouvert)
+  - Lancer `automate_delta_sync.py` sur Scaleway
 
 ### 2026-02-23 - Timeout adaptatif wait_section_idle()
 

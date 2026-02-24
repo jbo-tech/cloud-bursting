@@ -304,6 +304,20 @@ Technical decisions and their context. Added via `/retro`.
 **Alternatives considered**: Timeout fixe plus long (ne résout pas le problème fondamental), monitoring CPU seul sans API (manque la détection du scanner process), modifier get_section_activity() pour inclure le CPU (modifie le contrat de l'API utilisée ailleurs).
 **Date**: 2026-02-23
 
+### Automatic DB repair before remapping via .recover
+
+**Decision**: Ajouter `repair_plex_db()` dans `common/delta_sync.py`, appelée automatiquement dans `remap_library_paths()` avant les requêtes sur `media_parts`. Utiliser `.recover` (pas `.dump`) pour la reconstruction.
+**Context**: La DB exportée du ZimaBoard peut contenir de la corruption B-tree sur `media_parts`. Le `.dump` échoue (fichier vide) car il traverse les index corrompus. Le `.recover` parcourt les pages raw et récupère toutes les données (508946/508946 entrées dans les tests). Les 7 tables internes perdues (sqlite_stat1, etc.) sont recréées par Plex au démarrage.
+**Alternatives considered**: `.dump` (échoue sur corruption B-tree), `REINDEX` (échoue aussi car les pages d'index corrompues bloquent la lecture), `DROP INDEX` puis dump (DROP échoue pour la même raison), repair manuel avant injection (ajoute une étape manuelle au workflow).
+**Date**: 2026-02-23
+
+### VFS cache warming before Plex analysis
+
+**Decision**: Pré-remplir le cache VFS rclone en lisant 64 Ko de chaque fichier média d'une section avant de déclencher l'analyse Plex.
+**Context**: Test TV Shows (20260223_155138): 683/847 fichiers d'analyse échouent avec ENOENT. FFMPEG a un timeout interne très court sur le premier `read()`. Quand Plex lance l'analyse de plusieurs épisodes en parallèle (4-12ms d'intervalle), rclone n'a pas le temps de fetcher les premiers octets depuis S3. Les séries espacées de 1.7-4.2s réussissent car les données sont déjà en cache VFS.
+**Alternatives considered**: Augmenter le buffer size rclone (ne résout pas le délai initial du fetch S3), limiter le parallélisme Plex (pas configurable), augmenter les timeouts FFMPEG (pas de paramètre Plex accessible), retrier l'analyse (Plex ne retrie pas automatiquement les ENOENT).
+**Date**: 2026-02-24
+
 ### Stop MountMonitor before Export phase
 
 **Decision**: Stopper le MountMonitor avant la phase Export (avec `mount_monitor = None`) plutôt que dans le `finally` uniquement.

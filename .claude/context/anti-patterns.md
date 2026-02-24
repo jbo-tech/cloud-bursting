@@ -368,5 +368,12 @@ temps_stall = stall_threshold × check_interval
 
 **Problem**: `database disk image is malformed` pendant le UPDATE SQL de remapping des chemins. Plex crashe en boucle ensuite.
 **Cause**: La DB Plex (15 GB, tables FTS) peut avoir une corruption latente non détectée par `SELECT COUNT(*) FROM library_sections`. Le simple SELECT lit quelques pages, pas les tables FTS ni les index. Un UPDATE massif (30k+ lignes dans media_parts) expose la corruption.
-**Solution**: Pas de solution simple. La vérification PRAGMA échoue sur les tables FTS de Plex. Alternatives: (1) tester un UPDATE sur une petite table avant le gros remapping, (2) copier la DB et opérer sur la copie, (3) si erreur SQL pendant remapping, restaurer le backup automatiquement.
-**Date**: 2026-02-13
+**Solution**: `repair_plex_db()` dans `common/delta_sync.py` détecte la corruption via `SELECT COUNT(*) FROM media_parts` et répare via `.recover`. Appelée automatiquement avant le remapping.
+**Date**: 2026-02-13 (résolu 2026-02-23)
+
+### sqlite3 .dump fails on B-tree corruption (produces empty file)
+
+**Problem**: `sqlite3 db '.dump' | sqlite3 repaired.db` produit un fichier de 0 octets sur une DB avec index B-tree corrompus.
+**Cause**: `.dump` traverse les index et les données séquentiellement. Si un index corrompu bloque la lecture d'une table, le dump s'arrête avec "database disk image is malformed" et ne produit aucune sortie SQL pour cette table.
+**Solution**: Utiliser `.recover` au lieu de `.dump`. `.recover` parcourt les pages raw de la DB et reconstruit les données indépendamment des index. Les tables internes SQLite (sqlite_stat1, sqlite_sequence) sont perdues (7/82) mais Plex les recrée au démarrage. Toutes les tables de données (media_parts, metadata_items, etc.) sont récupérées.
+**Date**: 2026-02-23
