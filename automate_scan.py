@@ -42,7 +42,7 @@ from datetime import datetime
 
 # Imports modules common
 from common.config import load_env, load_libraries, get_docker_limits, print_phase_header
-from common.executor import execute_command, download_file_from_remote, read_state_file, docker_exec
+from common.executor import execute_command, download_file_from_remote, read_state_file, docker_exec, verify_archive
 from common.plex_setup import (
     apply_system_optimizations,
     cleanup_plex_data,
@@ -488,6 +488,7 @@ Profils d'instance:
         print("\n8.4 Téléchargement de l'archive...")
         local_archive = f'./{archive_name}'
         download_file_from_remote(instance_ip, archive_remote, local_archive)
+        verify_archive(local_archive)
 
         # === SUCCÈS ===
         print("\n" + "=" * 60)

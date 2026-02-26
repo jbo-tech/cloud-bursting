@@ -6,7 +6,7 @@ Déléguer les tâches d'indexation intensives de Plex (scan, génération de m�
 
 ## Current focus
 
-Diagnostic VFS warming terminé : cause identifiée (fichiers restructurés sur S3 depuis l'export DB déc 2025). Paramètre `--force-deep-scan` propagé à toutes les sections pour gérer les réorganisations S3. Prêt pour un run cloud complet.
+6 fixes infra (audit sécurité/optimisation) appliqués. Prêt pour un run cloud complet avec `--force-deep-scan`.
 
 **Scripts principaux:**
 - `automate_scan.py` - Cloud scan from scratch (MountMonitor, stop avant Export)
@@ -41,6 +41,19 @@ Diagnostic VFS warming terminé : cause identifiée (fichiers restructurés sur 
 ## Log
 
 <!-- Entries added by /retro, newest first -->
+
+### 2026-02-26 - 6 fixes infra (audit sécurité/optimisation)
+
+- Done:
+  - **Fix 1 - Self-destruct cloud-init**: `setup_instance.sh` - auto-shutdown après 96h via `nohup` (survit au crash du script d'orchestration)
+  - **Fix 3 - Masquer token Plex**: `plex_setup.py` - token affiché par longueur uniquement, PLEX_CLAIM masqué dans le print docker run
+  - **Fix 4 - Vérification archive**: `executor.py` - `verify_archive()` (tar -tzf) appelée après chaque download dans les 4 scripts
+  - **Fix 6 - SSH keepalive**: `executor.py` + `scaleway.py` - `ServerAliveInterval=30` + `ServerAliveCountMax=5` sur tous les SSH/SCP (4 emplacements)
+  - **Fix 7 - Docker CPU limits**: `config.py` - power=8.0 CPU/24g RAM (GP1-S), superpower=16.0 CPU/48g RAM (GP1-M)
+  - **Fix 9 - .gitignore**: `.current_instance_ip` ajouté
+- Next:
+  - Lancer `automate_delta_sync.py --force-deep-scan` sur Scaleway
+  - Valider les fixes en conditions réelles (SSH keepalive, auto-shutdown)
 
 ### 2026-02-26 - Diagnostic VFS warming + --force-deep-scan
 

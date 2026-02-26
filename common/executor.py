@@ -27,6 +27,8 @@ def _execute_remote(ip, command, check=True, capture_output=False, text=True, ti
         "ssh",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ServerAliveInterval=30",
+        "-o", "ServerAliveCountMax=5",
         f"root@{ip}",
         command
     ]
@@ -169,6 +171,8 @@ def transfer_file_to_remote(local_path, ip, remote_path):
         "scp",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ServerAliveInterval=30",
+        "-o", "ServerAliveCountMax=5",
         local_path,
         f"root@{ip}:{remote_path}"
     ]
@@ -209,6 +213,8 @@ def download_file_from_remote(ip, remote_path, local_path):
         "scp",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ServerAliveInterval=30",
+        "-o", "ServerAliveCountMax=5",
         f"root@{ip}:{remote_path}",
         local_path
     ]
@@ -245,3 +251,14 @@ def write_state_file(path, content):
     """
     with open(path, "w") as f:
         f.write(str(content))
+
+
+def verify_archive(archive_path):
+    """Vérifie l'intégrité d'une archive tar.gz."""
+    result = subprocess.run(
+        ["tar", "-tzf", archive_path],
+        capture_output=True, check=False, timeout=120
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Archive corrompue : {archive_path}")
+    print(f"   ✅ Archive vérifiée ({archive_path})")

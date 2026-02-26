@@ -59,4 +59,9 @@ chmod -R 777 /opt/plex_data
 echo "Pré-chargement de l'image Docker Plex..."
 docker pull plexinc/pms-docker:latest
 
+# Fail-safe : auto-shutdown après 96h (modifiable via variable d'env si besoin)
+MAX_LIFETIME_HOURS=${MAX_LIFETIME_HOURS:-96}
+echo "⏱️  Fail-safe : auto-shutdown dans ${MAX_LIFETIME_HOURS}h"
+nohup bash -c "sleep $((MAX_LIFETIME_HOURS * 3600)) && shutdown -h now" &>/dev/null &
+
 echo "✅ Instance configurée et prête."

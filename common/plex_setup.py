@@ -360,7 +360,7 @@ docker run -d \\
     -e TZ="Europe/Paris" \\
     -e PLEX_UID=1000 \\
     -e PLEX_GID=1000 \\
-    -e PLEX_CLAIM="{claim_token}" \\
+    -e PLEX_CLAIM="claim-****" \\
     -v "{media_path}:/Media:ro" \\
     -v "{config_path}:/config" \\
     -v "{transcode_path}:/transcode" \\
@@ -516,7 +516,7 @@ def get_plex_token(ip, container='plex', timeout=120, retry_interval=10):
 
         if result.returncode == 0 and result.stdout.strip():
             token = result.stdout.strip()
-            print(f"   ✅ Token récupéré après {elapsed}s : {token[:20]}...")
+            print(f"   ✅ Token récupéré après {elapsed}s ({len(token)} chars)")
             return token
 
         # Log de progression

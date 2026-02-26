@@ -65,7 +65,7 @@ from pathlib import Path
 
 # Imports modules common
 from common.config import load_env, get_docker_limits, print_phase_header
-from common.executor import execute_command, docker_exec
+from common.executor import execute_command, docker_exec, verify_archive
 from common.local import setup_local_test_env, cleanup_local_test_env, find_latest_db_archive
 from common.plex_setup import (
     setup_rclone_config,
@@ -594,6 +594,7 @@ def main():
             archive_name=archive_name,
             config_path=str(PLEX_CONFIG)
         )
+        verify_archive(archive_path_out)
 
         # 8.4 Résumé final
         print("\n8.4 Résumé final...")

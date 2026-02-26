@@ -3,6 +3,7 @@
 *.env
 configs/*-local.yaml
 .current_instance_id
+.current_instance_ip
 rclone.conf
 
 # User config (personal paths)

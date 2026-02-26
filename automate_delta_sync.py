@@ -52,7 +52,7 @@ from datetime import datetime
 
 # Import des modules common
 from common.config import load_env, get_docker_limits, print_phase_header
-from common.executor import execute_command, download_file_from_remote, docker_exec, read_state_file
+from common.executor import execute_command, download_file_from_remote, docker_exec, read_state_file, verify_archive
 from common.local import find_latest_db_archive
 from common.plex_setup import (
     apply_system_optimizations,
@@ -602,6 +602,7 @@ Profils d'instance:
         # Télécharger
         local_archive = f'./{archive_name}'
         download_file_from_remote(instance_ip, archive_remote, local_archive)
+        verify_archive(local_archive)
 
         # 10.4 Résumé final
         print("\n10.4 Résumé final...")

@@ -194,14 +194,14 @@ def get_docker_limits(profile='lite'):
             'cpus': '4.0',
         },
         'power': {
-            'memory': '16g',
-            'memory_swap': '18g',
-            'cpus': '4.0',
+            'memory': '24g',
+            'memory_swap': '26g',
+            'cpus': '8.0',
         },
         'superpower': {
-            'memory': '32g',
-            'memory_swap': '34g',
-            'cpus': '4.0',
+            'memory': '48g',
+            'memory_swap': '50g',
+            'cpus': '16.0',
         }
     }
 

@@ -47,7 +47,7 @@ from pathlib import Path
 
 # Imports modules common
 from common.config import load_env, load_libraries, get_docker_limits, print_phase_header
-from common.executor import execute_command, download_file_from_remote, docker_exec
+from common.executor import execute_command, download_file_from_remote, docker_exec, verify_archive
 from common.local import setup_local_test_env, cleanup_local_test_env
 from common.plex_setup import (
     apply_system_optimizations,
@@ -545,10 +545,12 @@ def main():
             # Déjà local, pas besoin de télécharger
             print(f"✅ Archive disponible localement : {archive_path}")
             local_archive = archive_path
+            verify_archive(local_archive)
         else:
             # Remote : télécharger l'archive
             local_archive = f'./{archive_name}'
             download_file_from_remote(ip, archive_path, local_archive)
+            verify_archive(local_archive)
 
         print("\n" + "=" * 60)
         print("✅ TEST TERMINÉ AVEC SUCCÈS")

@@ -142,7 +142,8 @@ def wait_ssh_ready(ip, timeout=120):
     while time.time() - start_time < timeout:
         result = subprocess.run(
             ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-             "-o", "ConnectTimeout=5", f"root@{ip}", "echo ok"],
+             "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=30",
+             "-o", "ServerAliveCountMax=5", f"root@{ip}", "echo ok"],
             capture_output=True,
             text=True
         )
