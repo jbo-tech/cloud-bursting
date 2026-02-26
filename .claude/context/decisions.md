@@ -324,3 +324,10 @@ Technical decisions and their context. Added via `/retro`.
 **Context**: L'export lit des fichiers locaux (DB Plex, métadonnées), pas S3. Le MountMonitor continuait à tourner pendant l'export, détectant des "pannes" et remontant inutilement (test 1: 4 remontages pendant l'export). Le `finally` garde un filet de sécurité pour les exceptions survenant avant l'export.
 **Alternatives considered**: Stopper dans le finally uniquement (remontages parasites pendant export), ne pas stopper du tout (thread daemon meurt avec le processus, mais pas de stats et arrêt sale).
 **Date**: 2026-02-11
+
+### --force-deep-scan applied to all sections (not just Music)
+
+**Decision**: Le paramètre `--force-deep-scan` (renommé depuis `--force-scan`) déclenche `force=1` sur toutes les sections (Music + vidéo/photos), pas seulement Music.
+**Context**: Le delta sync injecte une DB ancienne. Si des dossiers ont été renommés/restructurés sur S3 (cas avéré: Kaamelott, Hart to Hart, Columbo = 717/847 chemins obsolètes), le scan incrémental (`force=0`) ne parcourt que les chemins connus et ne découvre pas les nouveaux dossiers. Seul `force=1` parcourt tout le filesystem. Renommé `--force-deep-scan` pour distinguer clairement du scan incrémental standard.
+**Alternatives considered**: Détection automatique via le VFS warming (si >X% MISSING → force=1) — plus intelligent mais plus complexe pour un gain incertain ; toujours force=1 par défaut — plus lent, inutile quand S3 n'a pas changé.
+**Date**: 2026-02-26

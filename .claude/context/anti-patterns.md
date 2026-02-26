@@ -377,3 +377,17 @@ temps_stall = stall_threshold × check_interval
 **Cause**: `.dump` traverse les index et les données séquentiellement. Si un index corrompu bloque la lecture d'une table, le dump s'arrête avec "database disk image is malformed" et ne produit aucune sortie SQL pour cette table.
 **Solution**: Utiliser `.recover` au lieu de `.dump`. `.recover` parcourt les pages raw de la DB et reconstruit les données indépendamment des index. Les tables internes SQLite (sqlite_stat1, sqlite_sequence) sont perdues (7/82) mais Plex les recrée au démarrage. Toutes les tables de données (media_parts, metadata_items, etc.) sont récupérées.
 **Date**: 2026-02-23
+
+### Incremental scan (force=0) misses reorganized directories
+
+**Problem**: Delta sync injecte une DB avec des chemins `/Media/TVShows/Kaamelott Integrale (Livres I a VI + Bonus)/Livre I/`, mais S3 a été restructuré en `/Media/TV/Kaamelott/Season 1/`. Le scan incrémental termine en 2min avec 0 nouveaux items. 717/847 fichiers restent fantômes dans la DB.
+**Cause**: `force=0` ne parcourt que les chemins déjà connus en DB. Si un dossier n'existe plus, Plex passe simplement au suivant. Il ne découvre pas les nouveaux dossiers/fichiers qui ne sont pas dans la DB.
+**Solution**: Utiliser `--force-deep-scan` (force=1) quand la structure S3 a changé depuis l'export de la DB. Le scan complet parcourt tout le filesystem, nettoie les entrées obsolètes et découvre les nouveaux fichiers.
+**Date**: 2026-02-26
+
+### VFS warming failures misdiagnosed as rclone/FUSE/shell issues
+
+**Problem**: VFS warming échoue à 77% (197/847) sur TV Shows. Diagnostic initial accuse rclone FUSE, Mega S3 rate limiting, ou apostrophes dans les noms de fichiers.
+**Cause**: Les 650 échecs sont des ENOENT instantanés — les fichiers n'existent tout simplement pas aux chemins attendus (dossiers restructurés sur S3). Le `head -c 65536` redirige stderr vers `/dev/null`, masquant l'erreur réelle.
+**Solution**: Toujours capturer stderr dans les commandes de diagnostic. Avant d'accuser l'infrastructure (rclone, FUSE, réseau), vérifier d'abord que les données existent aux chemins attendus avec un simple `[ -e "$file" ]`.
+**Date**: 2026-02-26
