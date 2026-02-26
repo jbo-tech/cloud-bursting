@@ -29,7 +29,7 @@ Usage:
     python test_delta_sync.py --archive ./plex_db_only_20251220.tar.gz
 
     # Forcer un scan complet au lieu d'incrémental
-    python test_delta_sync.py --force-scan
+    python test_delta_sync.py --force-deep-scan
 
     # Test avec filtre sur bibliothèque musicale (artistes commençant par Q)
     python test_delta_sync.py --filter Q
@@ -124,8 +124,8 @@ def main():
                         default='standard', help='Profil rclone (lite=conservateur, standard=équilibré)')
     parser.add_argument('--keep', action='store_true',
                         help='Garder le conteneur après test')
-    parser.add_argument('--force-scan', action='store_true',
-                        help='Forcer un scan complet (force=1) au lieu d\'incrémental')
+    parser.add_argument('--force-deep-scan', action='store_true',
+                        help='Forcer un rescan complet de toutes les sections (utile si des dossiers ont été renommés/déplacés sur S3)')
     parser.add_argument('--filter', type=str, metavar='PREFIX',
                         help='Filtrer le scan music par préfixe (ex: --filter Q)')
     parser.add_argument('--quick-test', action='store_true',
@@ -195,7 +195,7 @@ def main():
         print("=" * 60)
         print(f"Archive        : {archive_path} ({archive_size:.2f} GB)")
         print(f"Profil rclone  : {rclone_profile}")
-        print(f"Mode scan      : {'FORCÉ' if args.force_scan else 'INCRÉMENTAL'}")
+        print(f"Mode scan      : {'FORCÉ' if args.force_deep_scan else 'INCRÉMENTAL'}")
         if args.filter:
             print(f"Filtre         : {args.filter}")
         print("=" * 60)
@@ -425,10 +425,10 @@ def main():
                         )
                     else:
                         print(f"   ⚠️  Dossier local non trouvé, fallback sur API refresh")
-                        trigger_section_scan(ip, 'plex', plex_token, music_section_id, force=args.force_scan)
+                        trigger_section_scan(ip, 'plex', plex_token, music_section_id, force=args.force_deep_scan)
                 else:
                     # Scan global via API
-                    trigger_section_scan(ip, 'plex', plex_token, music_section_id, force=args.force_scan)
+                    trigger_section_scan(ip, 'plex', plex_token, music_section_id, force=args.force_deep_scan)
 
                 # Attendre que le scan soit terminé
                 wait_section_idle(ip, 'plex', plex_token, music_section_id,
@@ -544,7 +544,7 @@ def main():
             for section_name, info in other_sections:
                 # Étape 1: Scan de la section
                 print(f"\n   🔍 Scan de '{section_name}' (ID: {info['id']}, type: {info['type']})")
-                trigger_section_scan(ip, 'plex', plex_token, info['id'], force=False)
+                trigger_section_scan(ip, 'plex', plex_token, info['id'], force=args.force_deep_scan)
 
                 # Attendre que le scan soit terminé
                 # section_type permet un timeout adaptatif (4h pour photos)

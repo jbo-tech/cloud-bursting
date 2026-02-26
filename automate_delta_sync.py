@@ -135,8 +135,8 @@ Profils d'instance:
                         help='Mode test rapide : skip Sonic, scan validation uniquement')
     parser.add_argument('--section', type=str, action='append', metavar='SECTION',
                         help='Traiter uniquement ces sections (répétable, ex: --section Movies)')
-    parser.add_argument('--force-scan', action='store_true',
-                        help='Forcer un scan complet au lieu d\'incrémental')
+    parser.add_argument('--force-deep-scan', action='store_true',
+                        help='Forcer un rescan complet de toutes les sections (utile si des dossiers ont été renommés/déplacés sur S3)')
     parser.add_argument('--collect-logs', action='store_true',
                         help='Récupérer les logs Plex en fin de run')
     parser.add_argument('--save-output', action='store_true',
@@ -207,7 +207,7 @@ Profils d'instance:
         print("=" * 60)
         print(f"Archive         : {archive_path} ({archive_size:.2f} GB)")
         print(f"Profil instance : {profile} ({INSTANCE_PROFILES[profile]['description']})")
-        print(f"Mode scan       : {'FORCÉ' if args.force_scan else 'INCRÉMENTAL'}")
+        print(f"Mode scan       : {'FORCÉ' if args.force_deep_scan else 'INCRÉMENTAL'}")
         print("=" * 60)
 
         # Variables pour le suivi
@@ -429,7 +429,7 @@ Profils d'instance:
             if music_section_id:
                 print(f"\n8.2 Scan de la section Musique [{music_section_id}] {music_section_name}...")
 
-                trigger_section_scan(instance_ip, 'plex', plex_token, music_section_id, force=args.force_scan)
+                trigger_section_scan(instance_ip, 'plex', plex_token, music_section_id, force=args.force_deep_scan)
 
                 # Attendre que le scan soit terminé (4h pour absorber les nouveaux items)
                 wait_section_idle(instance_ip, 'plex', plex_token, music_section_id,
@@ -549,7 +549,7 @@ Profils d'instance:
             for section_name, info in other_sections:
                 # Scan de la section
                 print(f"\n   🔍 Scan de '{section_name}' (ID: {info['id']}, type: {info['type']})")
-                trigger_section_scan(instance_ip, 'plex', plex_token, info['id'], force=False)
+                trigger_section_scan(instance_ip, 'plex', plex_token, info['id'], force=args.force_deep_scan)
                 wait_section_idle(instance_ip, 'plex', plex_token, info['id'],
                                   section_type=info['type'], phase='scan',
                                   config_path='/opt/plex_data/config', timeout=14400)
